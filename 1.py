@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-DEFAULT_INPUT = "videos/demo_lhq.mp4"
+DEFAULT_INPUT = "videos/input.mp4"
 DEFAULT_OUTPUT_DIR = "outputs"
 DEFAULT_CONTEXT_PATH = "context.json"
 DEFAULT_OCOOL_BASE_URL = "https://one.ocoolai.com/v1"
@@ -242,17 +242,76 @@ def parse_json_response(text: str) -> dict[str, Any]:
         return json.loads(match.group(0))
 
 
+DEFAULT_FORBIDDEN_TERMS = [
+    "birds",
+    "bird",
+    "VOICEOVER",
+]
 
 
-def forbidden_terms_from_context(context_packet: dict[str, Any] | None) -> list[str]:
+DEFAULT_TTS_UNFRIENDLY_TERMS = [
+    "说得平",
+    "意思很明白",
+]
+
+
+def find_terms_in_text(text: str, terms: list[str]) -> list[str]:
+    lowered = text.lower()
+    return [term for term in terms if term and term.lower() in lowered]
+
+
+def terms_from_context(context_packet: dict[str, Any] | None, keys: tuple[str, ...]) -> list[str]:
     context_packet = context_packet or {}
-    terms = ["birds", "bird", "VOICEOVER"]
-    for key in ("forbidden_terms", "forbidden_story_facts", "must_not_include"):
+    terms: list[str] = []
+    for key in keys:
         value = context_packet.get(key)
         if isinstance(value, list):
             terms.extend(str(item) for item in value if str(item).strip())
         elif isinstance(value, str) and value.strip():
             terms.append(value)
+    return terms
+
+
+def humanize_unsafe_terms_from_context(context_packet: dict[str, Any] | None) -> list[str]:
+    return sorted(set(terms_from_context(
+        context_packet,
+        (
+            "humanize_unsafe_detail_terms",
+            "forbidden_visual_details",
+            "unsafe_detail_terms",
+        ),
+    )), key=lambda item: item.lower())
+
+
+def tts_unfriendly_terms_from_context(context_packet: dict[str, Any] | None) -> list[str]:
+    terms = list(DEFAULT_TTS_UNFRIENDLY_TERMS)
+    terms.extend(terms_from_context(
+        context_packet,
+        (
+            "tts_unfriendly_terms",
+            "bad_tts_terms",
+        ),
+    ))
+    return sorted(set(terms), key=lambda item: item.lower())
+
+
+def blocked_humanize_terms(text: str, context_packet: dict[str, Any] | None) -> list[str]:
+    blocked: list[str] = []
+    if re.search(r"[A-Za-z]", text):
+        blocked.append("English letters")
+    blocked.extend(find_terms_in_text(text, forbidden_terms_from_context(context_packet)))
+    blocked.extend(find_terms_in_text(text, humanize_unsafe_terms_from_context(context_packet)))
+    blocked.extend(find_terms_in_text(text, tts_unfriendly_terms_from_context(context_packet)))
+    return sorted(set(blocked), key=lambda item: item.lower())
+
+
+def forbidden_terms_from_context(context_packet: dict[str, Any] | None) -> list[str]:
+    terms = list(DEFAULT_FORBIDDEN_TERMS)
+    terms.extend(terms_from_context(context_packet, (
+        "forbidden_terms",
+        "forbidden_story_facts",
+        "must_not_include",
+    )))
     return sorted(set(terms), key=lambda item: item.lower())
 
 
@@ -270,10 +329,14 @@ def validate_voiceover_doc(voiceover_doc: dict[str, Any], context_packet: dict[s
     if re.search(r"[A-Za-z]", text):
         raise SystemExit("Voiceover text contains English letters. Regenerate or review the script before TTS.")
 
-    lowered = text.lower()
-    blocked = [term for term in forbidden_terms_from_context(context_packet) if term and term.lower() in lowered]
+    blocked = find_terms_in_text(text, forbidden_terms_from_context(context_packet))
     if blocked:
         raise SystemExit("Voiceover text contains forbidden terms: " + ", ".join(blocked))
+    tts_blocked = find_terms_in_text(text, tts_unfriendly_terms_from_context(context_packet))
+    if tts_blocked:
+        raise SystemExit("Voiceover text contains TTS-unfriendly terms: " + ", ".join(tts_blocked))
+
+
 def select_clips_with_llm(
     segments: list[dict[str, Any]],
     target_duration: float,
@@ -590,8 +653,9 @@ def generate_voiceover_with_llm(
 - 每句配音如果使用了上下文包的信息，必须在 context_refs 中写明引用的字段或实体名。
 - source_segment_ids 必须来自 transcript，尽量连续；整体故事按原视频时序推进，除非开头 hook 需要短暂前置高能片段。
 - 文案要适合配音，短句为主，有节奏，有口语感，不要复述字幕，不要写成影评论文。
+- 避免 TTS 容易读错或听起来别扭的省略表达，例如“说得平”“意思很明白”；这类句子应改成“语气平静”“意思很清楚”。
 - 严禁出现英文字母或英文单词；如果候选里有英文，必须改成纯中文。
-- 必须遵守 context_packet.correct_synopsis、forbidden_terms、forbidden_story_facts；如果用户说明没有买瓜剧情，绝不能写买瓜、瓜摊、瓜摊老板、西瓜、保熟等内容。
+- 必须遵守 context_packet.correct_synopsis、forbidden_terms、forbidden_story_facts、must_not_include；上下文包禁止的错误剧情和词语绝不能出现。
 - 如果 context_packet.forbidden_terms 中的任何词出现在候选文案里，必须改写到完全不出现。
 - voiceover 必须输出 20 到 35 条短句；每条对应一个可剪辑画面，不要写成长段落。
 - 每句 10 到 32 个中文字符为宜；总字数按 target_duration_seconds 控制。
@@ -686,14 +750,14 @@ def review_voiceover_with_llm(
 2. 证据约束：每句信息是否来自 transcript、context_packet 或 allowed_external_knowledge；没有证据就改成更保守的说法。
 3. 口播质量：句子是否像人讲故事，而不是字幕摘要；删除生硬、重复、空泛的表达。
 4. 错别字错词：修正同音错词、错称谓、标点造成的断句问题。
-5. TTS 可读性：避免生僻符号、英文缩写、过长句；数字和称谓要适合直接念出来。所有最终文案必须是纯中文和中文标点，不允许出现英文字母。
+5. TTS 可读性：避免生僻符号、英文缩写、过长句和不自然省略表达；数字和称谓要适合直接念出来。不要使用“说得平”“意思很明白”，应改成“语气平静”“意思很清楚”。所有最终文案必须是纯中文和中文标点，不允许出现英文字母。
 6. 画面想象：每句文案都要能对应到原片画面，visual_note 要说明用什么画面支撑这句话。
 
 严格规则：
 - 不要编造 transcript 和 context_packet 都没有的信息。
 - 可以补充 context_packet.allowed_external_knowledge 明确允许的背景，但必须在 context_refs 中标注。
 - 不要输出“本片讲了”“视频中可以看到”这类空泛话术，要直接讲故事。
-- 必须检查 context_packet.correct_synopsis、forbidden_terms、forbidden_story_facts，违反则重写。
+- 必须检查 context_packet.correct_synopsis、forbidden_terms、forbidden_story_facts、must_not_include，违反则重写。
 - 每句 source_segment_ids 必须来自 transcript；如调整文案，也要保留或修正对应来源。
 - 保持总时长接近 target_duration_seconds；120 秒目标通常需要 20 到 35 条短句，不要合并成长段。
 - 优先保证故事质量和信息密度。
@@ -729,6 +793,166 @@ def review_voiceover_with_llm(
     reviewed["reviewed"] = True
     reviewed["review_model"] = model
     return reviewed
+
+
+def humanize_voiceover_with_llm(
+    voiceover_doc: dict[str, Any],
+    target_duration: float,
+    model: str,
+    base_url: str,
+    context_packet: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    api_key = os.environ.get("OCOOL_API_KEY")
+    if not api_key or api_key == "put_your_ocool_api_key_here":
+        print("OCOOL_API_KEY is empty. Skip voiceover humanization.")
+        return None
+
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise SystemExit(
+            "OpenAI SDK is required for OCool calls. Run: .\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt"
+        ) from exc
+
+    voiceover_items = [
+        {
+            "index": idx,
+            "text": str(item.get("text", "")).strip(),
+            "source_segment_ids": item.get("source_segment_ids", []),
+            "story_role": item.get("story_role", ""),
+            "visual_note": item.get("visual_note", ""),
+        }
+        for idx, item in enumerate(voiceover_doc.get("voiceover", []), start=1)
+        if str(item.get("text", "")).strip()
+    ]
+    if not voiceover_items:
+        return None
+
+    instructions = """
+你是中文影视解说的“真人口播润色师”。你的任务不是重写剧情，而是在完全保留事实和时间戳绑定的前提下，把候选文案改得更像真人会说的话。
+
+你只能改每条 voiceover 的 text，不允许改变条数、顺序、source_segment_ids、story_role 或 visual_note。
+每个 index 的润色必须只对应同一个 index 的原句，不能把上一句或下一句的内容挪过来。
+
+润色目标：
+- 去掉 AI 腔、说明书感、字幕摘要感。
+- 增强真人口播的停顿、语气和推进感。
+- 句子要适合 TTS 直接念出来，短句优先，听起来像影视解说。
+- 可以让表达更有口语感，但不能新增没有证据的画面细节。
+- 不要明显缩短文案；每句通常保留原句 80% 到 120% 的字数和信息量，只改口播感。
+- 保持紧张、有压迫感、克制，不要变成夸张营销号。
+
+硬规则：
+- 不得出现英文字母或英文单词。
+- 不得出现 context_packet.forbidden_terms、forbidden_story_facts 或 must_not_include 里禁止的内容。
+- 不得写上下文包明确禁止的错误剧情、错误人物、错误地点或错误物件。
+- 不得改动人物关系、事件结果和每句对应的 source_segment_ids。
+- 不得移动、合并、拆分或错位任何一句的核心语义；如果某句不好润色，就原样返回。
+- 不得新增候选文案里没有的可见动作、生理反应或听觉细节；如果 context_packet.humanize_unsafe_detail_terms、forbidden_visual_details 或 unsafe_detail_terms 列出短语，一律禁止。
+- 如果 context_packet.tts_unfriendly_terms 或 bad_tts_terms 列出短语，一律禁止；默认也不要使用“说得平”“意思很明白”。
+- 不得把“语气平静”这类正常说法改成“说得平”。
+- 不得把保守表达改成更严重的威胁或结果；可以更口语，但不能升级事实。
+- 每句尽量控制在 12 到 42 个中文字符；不要为了炫技写长句，也不要为了显得利落而丢信息。
+- 输出必须是 JSON，不要 Markdown，不要解释。
+
+JSON schema:
+{
+  "humanize_notes": ["你主要做了哪些口播层面的改动"],
+  "humanized_voiceover": [
+    {
+      "index": 1,
+      "text": "润色后的纯中文口播句子"
+    }
+  ]
+}
+""".strip()
+    prompt = json.dumps(
+        {
+            "target_duration_seconds": target_duration,
+            "expected_voiceover_count": len(voiceover_items),
+            "required_indexes": list(range(1, len(voiceover_items) + 1)),
+            "context_packet": context_packet or {},
+            "title": voiceover_doc.get("title", ""),
+            "summary": voiceover_doc.get("summary", ""),
+            "voiceover": voiceover_items,
+        },
+        ensure_ascii=False,
+    )
+
+    print(f"Calling OCool for humanized voiceover polish: {model}")
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    response = client.responses.create(
+        model=model,
+        instructions=instructions,
+        input=prompt,
+    )
+    result = parse_json_response(extract_response_text(response))
+    rows = result.get("humanized_voiceover")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("Humanize model did not return any voiceover lines.")
+
+    by_index: dict[int, str] = {}
+    rejected_rows: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("Humanize model returned an invalid row.")
+        index = int(row.get("index", 0))
+        text = str(row.get("text", "")).strip()
+        if index < 1 or index > len(voiceover_items) or not text:
+            raise ValueError("Humanize model returned an invalid index or empty text.")
+        if index in by_index:
+            raise ValueError("Humanize model returned duplicate indexes.")
+        blocked_terms = blocked_humanize_terms(text, context_packet)
+        if blocked_terms:
+            rejected_rows.append(f"{index}: {', '.join(blocked_terms)}")
+            continue
+        original_text = str(voiceover_items[index - 1].get("text", "")).strip()
+        minimum_length = max(8, int(len(original_text) * 0.8))
+        if len(text) < minimum_length:
+            rejected_rows.append(f"{index}: too short")
+            continue
+        by_index[index] = text
+    if rejected_rows:
+        print("Rejected unsafe humanized rows: " + "; ".join(rejected_rows))
+
+    humanized = dict(voiceover_doc)
+    humanized_items: list[dict[str, Any]] = []
+    for idx, item in enumerate(voiceover_doc.get("voiceover", []), start=1):
+        new_item = dict(item)
+        if idx in by_index:
+            new_item["pre_humanize_text"] = str(item.get("text", "")).strip()
+            new_item["text"] = by_index[idx]
+        humanized_items.append(new_item)
+    humanized["voiceover"] = humanized_items
+    humanized["humanized"] = True
+    humanized["humanize_model"] = model
+    humanize_notes = result.get("humanize_notes", [])
+    if not isinstance(humanize_notes, list):
+        humanize_notes = []
+    if rejected_rows:
+        humanize_notes.append("自动丢弃不可靠润色句：" + "; ".join(rejected_rows))
+    humanized["humanize_notes"] = humanize_notes
+    return humanized
+
+
+def write_humanize_diff(before_doc: dict[str, Any], after_doc: dict[str, Any], path: Path) -> None:
+    before_items = before_doc.get("voiceover", []) or []
+    after_items = after_doc.get("voiceover", []) or []
+    lines = ["# 真人口播润色对比", ""]
+    for idx, (before, after) in enumerate(zip(before_items, after_items), start=1):
+        before_text = str(before.get("text", "")).strip()
+        after_text = str(after.get("text", "")).strip()
+        if before_text == after_text:
+            continue
+        lines.extend([
+            f"## {idx:02d}",
+            f"原文：{before_text}",
+            f"润色：{after_text}",
+            "",
+        ])
+    if len(lines) == 2:
+        lines.append("本次润色没有改变文案。")
+    path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def fallback_voiceover_script(segments: list[dict[str, Any]], target_duration: float) -> dict[str, Any]:
@@ -1037,20 +1261,21 @@ def refresh_voiceover_timeline(alignment: list[dict[str, Any]]) -> list[dict[str
 def limit_alignment_to_target_duration(
     alignment: list[dict[str, Any]],
     target_duration: float,
-    tolerance: float = 3.0,
+    tolerance: float = 8.0,
 ) -> list[dict[str, Any]]:
     if not alignment or target_duration <= 0:
         return refresh_voiceover_timeline(alignment)
 
     total = sum(float(row["voiceover_duration"]) for row in alignment)
-    if total <= target_duration + tolerance:
+    duration_limit = target_duration + tolerance
+    if total <= duration_limit:
         return refresh_voiceover_timeline(alignment)
 
     kept: list[dict[str, Any]] = []
     cursor = 0.0
     for row in alignment:
         duration = float(row["voiceover_duration"])
-        if not kept or cursor + duration <= target_duration + tolerance:
+        if not kept or cursor + duration <= duration_limit:
             kept.append(row)
             cursor += duration
             continue
@@ -1143,6 +1368,7 @@ def align_voiceover_to_transcript(
             "context_refs": item.get("context_refs", []),
             "story_role": item.get("story_role", ""),
             "confidence": item.get("confidence"),
+            "pre_humanize_text": item.get("pre_humanize_text", ""),
         })
         cursor += duration
 
@@ -1418,6 +1644,7 @@ def main() -> None:
     parser.add_argument("--language", default=None, help="Optional speech language, e.g. zh, en. Default: auto detect.")
     parser.add_argument("--ocool-base-url", default=os.environ.get("OCOOL_BASE_URL", DEFAULT_OCOOL_BASE_URL))
     parser.add_argument("--ocool-model", default=os.environ.get("OCOOL_MODEL", DEFAULT_OCOOL_MODEL))
+    parser.add_argument("--ocool-humanize-model", default=os.environ.get("OCOOL_HUMANIZE_MODEL", "qwen-plus-latest"), help="OpenAI-compatible model used only for human-style voiceover polish.")
     parser.add_argument("--padding", type=float, default=0.25, help="Seconds to pad matched source visual clips.")
     parser.add_argument("--tts-mode", choices=["ocool", "windows", "none"], default=os.environ.get("TTS_MODE", "ocool"), help="Generate per-sentence voiceover. Use 'ocool' for API TTS, 'windows' for local fallback, or 'none' for script/silent preview only.")
     parser.add_argument("--tts-voice", default=os.environ.get("WINDOWS_TTS_VOICE", "Microsoft Huihui Desktop"), help="Windows TTS voice name. If unavailable, a Chinese installed voice or system default is used.")
@@ -1434,6 +1661,8 @@ def main() -> None:
     parser.add_argument("--require-llm", action="store_true", help="Fail instead of using fallback when OCool script generation fails.")
     parser.add_argument("--skip-review", action="store_true", help="Skip the second LLM semantic/read-aloud review pass before TTS.")
     parser.add_argument("--force-review", action="store_true", help="Review the script again even if voiceover_script.json is already marked reviewed.")
+    parser.add_argument("--skip-humanize", action="store_true", help="Skip the human-style voiceover polish pass.")
+    parser.add_argument("--force-humanize", action="store_true", help="Run the human-style polish pass again even if voiceover_script.json is already marked humanized.")
     parser.add_argument("--voiceover-audio", default=None, help="Optional narration audio path to mux into final_with_voiceover.mp4.")
     args = parser.parse_args()
 
@@ -1454,6 +1683,7 @@ def main() -> None:
     script_json_path = output_dir / "voiceover_script.json"
     script_txt_path = output_dir / "voiceover_script.txt"
     voiceover_srt_path = output_dir / "voiceover.srt"
+    humanize_diff_path = output_dir / "voiceover_humanize_diff.txt"
     alignment_path = output_dir / "alignment.json"
     selected_path = output_dir / "selected_clips.json"
     mapping_path = output_dir / "time_mapping.json"
@@ -1478,7 +1708,7 @@ def main() -> None:
     voiceover_doc: dict[str, Any] | None = None
     if script_json_path.exists() and not args.force_script:
         print(f"Voiceover script exists, reuse: {script_json_path}")
-        saved = json.loads(script_json_path.read_text(encoding="utf-8"))
+        saved = json.loads(script_json_path.read_text(encoding="utf-8-sig"))
         voiceover_doc = dict(saved)
         voiceover_doc["voiceover"] = [
             {
@@ -1488,6 +1718,7 @@ def main() -> None:
                 "story_role": item.get("story_role", ""),
                 "confidence": item.get("confidence"),
                 "visual_note": item.get("visual_note", ""),
+                "pre_humanize_text": item.get("pre_humanize_text", ""),
             }
             for item in saved.get("voiceover", [])
             if item.get("text")
@@ -1539,6 +1770,43 @@ def main() -> None:
             reviewed_doc = None
         if reviewed_doc is not None:
             voiceover_doc = reviewed_doc
+
+    should_humanize = (
+        not args.no_llm
+        and not args.skip_humanize
+        and (args.force_humanize or not voiceover_doc.get("humanized"))
+    )
+    if should_humanize:
+        if args.force_humanize and voiceover_doc.get("humanized"):
+            reset_items: list[dict[str, Any]] = []
+            for item in voiceover_doc.get("voiceover", []):
+                reset_item = dict(item)
+                original_text = str(reset_item.get("pre_humanize_text", "")).strip()
+                if original_text:
+                    reset_item["text"] = original_text
+                reset_items.append(reset_item)
+            voiceover_doc = dict(voiceover_doc)
+            voiceover_doc["voiceover"] = reset_items
+            voiceover_doc["humanized"] = False
+        before_humanize_doc = json.loads(json.dumps(voiceover_doc, ensure_ascii=False))
+        try:
+            humanized_doc = humanize_voiceover_with_llm(
+                voiceover_doc=voiceover_doc,
+                target_duration=args.target_duration,
+                model=args.ocool_humanize_model,
+                base_url=args.ocool_base_url,
+                context_packet=context_packet,
+            )
+        except Exception as exc:
+            if args.require_llm:
+                raise SystemExit(f"Voiceover humanize failed and --require-llm is set: {exc}") from exc
+            print(f"Voiceover humanize failed: {exc}")
+            print("Continue with reviewed script. Add --require-llm to fail fast.")
+            humanized_doc = None
+        if humanized_doc is not None:
+            voiceover_doc = humanized_doc
+            write_humanize_diff(before_humanize_doc, voiceover_doc, humanize_diff_path)
+            print(f"Wrote humanize diff: {humanize_diff_path}")
 
     validate_voiceover_doc(voiceover_doc, context_packet)
 

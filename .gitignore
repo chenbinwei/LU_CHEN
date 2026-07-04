@@ -26,7 +26,7 @@ coverage/
 
 # Demo input media
 videos/*
-!videos/demo_lhq.mp4
+!videos/.gitkeep
 
 # Generated outputs
 outputs/
