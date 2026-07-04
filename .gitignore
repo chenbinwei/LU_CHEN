@@ -1,4 +1,4 @@
-.env
+﻿.env
 node_modules/
 
 # macOS
@@ -24,6 +24,20 @@ coverage/
 .vscode/
 .idea/
 
-# Local media assets
-videos/
+# Demo input media
+videos/*
+!videos/demo_lhq.mp4
+
+# Generated outputs
 outputs/
+outputs_archive/
+
+# Python virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local context packet
+context.json
