@@ -19,7 +19,7 @@ class PipelineTest(unittest.TestCase):
                     "id": 1,
                     "start": 0.0,
                     "end": 2.0,
-                    "text": "刘华强走进房间。",
+                    "text": "主角走进房间。",
                 }
             ],
             target_duration=10.0,
@@ -31,8 +31,8 @@ class PipelineTest(unittest.TestCase):
         terms = forbidden_terms_from_context(context_packet={})
 
         self.assertIn("VOICEOVER", terms)
-        self.assertNotIn("bird", terms)
-        self.assertNotIn("birds", terms)
+        self.assertNotIn("obsolete_term", terms)
+        self.assertNotIn("obsolete_terms", terms)
 
     def test_validate_requested_target_duration_requires_positive_shorter_than_source(self):
         validate_requested_target_duration(target_duration=60.0, video_duration=120.0)

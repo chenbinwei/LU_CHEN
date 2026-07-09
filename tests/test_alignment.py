@@ -12,10 +12,10 @@ from video_slicer.alignment import (
 
 def sample_segments():
     return [
-        {"id": 1, "start": 0.0, "end": 2.0, "text": "刘华强走进房间"},
+        {"id": 1, "start": 0.0, "end": 2.0, "text": "主角走进房间"},
         {"id": 2, "start": 2.0, "end": 4.0, "text": "给我跪下"},
         {"id": 3, "start": 4.0, "end": 7.0, "text": "叫一声爷 我就放过你"},
-        {"id": 4, "start": 7.0, "end": 10.0, "text": "封彪低头服软"},
+        {"id": 4, "start": 7.0, "end": 10.0, "text": "对手低头服软"},
     ]
 
 
@@ -30,14 +30,14 @@ def ordered_segments():
 
 class AlignmentTest(unittest.TestCase):
     def test_simple_text_score_prefers_overlapping_text(self):
-        good = simple_text_score("刘华强让封彪跪下", "给我跪下")
-        bad = simple_text_score("刘华强让封彪跪下", "天气很好")
+        good = simple_text_score("主角让对手跪下", "给我跪下")
+        bad = simple_text_score("主角让对手跪下", "天气很好")
 
         self.assertGreater(good, bad)
 
     def test_score_source_evidence_does_not_auto_trust_ids(self):
-        good = score_source_evidence("刘华强让封彪跪下", "给我跪下")
-        bad = score_source_evidence("刘华强让封彪跪下", "天气很好")
+        good = score_source_evidence("主角让对手跪下", "给我跪下")
+        bad = score_source_evidence("主角让对手跪下", "天气很好")
 
         self.assertGreater(good, bad)
         self.assertLess(good, 1.0)
@@ -46,7 +46,7 @@ class AlignmentTest(unittest.TestCase):
         voiceover_doc = {
             "voiceover": [
                 {
-                    "text": "他冷冷地命令封彪当场跪下。",
+                    "text": "主角冷冷地命令对手当场跪下。",
                     "source_segment_ids": [2],
                     "story_role": "turning_point",
                     "visual_note": "跪下台词画面",
@@ -87,7 +87,7 @@ class AlignmentTest(unittest.TestCase):
         voiceover_doc = {
             "voiceover": [
                 {
-                    "text": "刘华强逼对方跪下。",
+                    "text": "主角逼对方跪下。",
                     "source_segment_ids": [],
                 }
             ]
@@ -156,8 +156,8 @@ class AlignmentTest(unittest.TestCase):
 
     def test_apply_estimated_voiceover_timeline_adds_voiceover_fields(self):
         alignment = [
-            {"sentence_id": 1, "text": "刘华强走进来。", "estimated_voiceover_duration": 2.0},
-            {"sentence_id": 2, "text": "封彪开始慌了。", "estimated_voiceover_duration": 3.0},
+            {"sentence_id": 1, "text": "主角走进来。", "estimated_voiceover_duration": 2.0},
+            {"sentence_id": 2, "text": "对手开始慌了。", "estimated_voiceover_duration": 3.0},
         ]
 
         result = apply_estimated_voiceover_timeline(alignment)

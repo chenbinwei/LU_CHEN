@@ -8,7 +8,7 @@ from video_slicer.quality_report import build_quality_report, text_similarity, w
 def sample_alignment(**overrides):
     row = {
         "sentence_id": 1,
-        "text": "刘华强逼封彪当众低头。",
+        "text": "主角逼对手当众低头。",
         "source_text": "给我跪下 叫一声爷",
         "source_start": 10.0,
         "source_end": 14.0,
@@ -21,7 +21,7 @@ def sample_alignment(**overrides):
 def sample_clip(**overrides):
     row = {
         "id": 1,
-        "sentence_text": "刘华强逼封彪当众低头。",
+        "sentence_text": "主角逼对手当众低头。",
         "source_start": 10.0,
         "source_end": 14.0,
         "duration": 4.0,
@@ -32,8 +32,8 @@ def sample_clip(**overrides):
 
 class QualityReportTest(unittest.TestCase):
     def test_text_similarity_uses_chinese_overlap(self):
-        self.assertGreater(text_similarity("刘华强逼封彪下跪", "刘华强 叫封彪 跪下"), 0.2)
-        self.assertEqual(text_similarity("", "刘华强"), 0.0)
+        self.assertGreater(text_similarity("主角逼对手下跪", "主角 叫对手 跪下"), 0.2)
+        self.assertEqual(text_similarity("", "主角"), 0.0)
 
     def test_clean_report_passes(self):
         report = build_quality_report(
@@ -69,7 +69,7 @@ class QualityReportTest(unittest.TestCase):
         report = build_quality_report(
             alignment=[
                 sample_alignment(
-                    text="刘华强说出 final warning。",
+                    text="主角说出 final warning。",
                     source_start=10.0,
                     source_end=80.0,
                     voiceover_duration=4.0,

@@ -55,8 +55,8 @@ class ScriptGenerationPureHelperTest(unittest.TestCase):
         terms = forbidden_terms_from_context(context_packet={})
 
         self.assertIn("VOICEOVER", terms)
-        self.assertNotIn("bird", terms)
-        self.assertNotIn("birds", terms)
+        self.assertNotIn("obsolete_term", terms)
+        self.assertNotIn("obsolete_terms", terms)
 
     def test_validate_voiceover_doc_rejects_tts_unfriendly_terms(self):
         voiceover_doc = {
