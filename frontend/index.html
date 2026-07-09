@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>视频切片工作台</title>
+    <link rel="stylesheet" href="/assets/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>视频切片工作台</h1>
+        <p id="apiStatus" class="muted">连接中</p>
+      </div>
+      <div class="status-pill">Local</div>
+    </header>
+
+    <main class="workspace">
+      <section class="pane pane-projects" aria-labelledby="projectHeading">
+        <div class="pane-header">
+          <h2 id="projectHeading">项目</h2>
+        </div>
+
+        <form id="projectForm" class="stack">
+          <label>
+            <span>视频路径</span>
+            <input id="sourceVideoPath" name="source_video_path" type="text" autocomplete="off" required>
+          </label>
+          <label>
+            <span>原视频时长（秒）</span>
+            <input id="sourceDurationSeconds" name="source_duration_seconds" type="number" min="1" step="0.1">
+          </label>
+          <button id="createProjectButton" type="submit">创建项目</button>
+        </form>
+
+        <div id="projectList" class="item-list" aria-live="polite"></div>
+      </section>
+
+      <section class="pane pane-context" aria-labelledby="contextHeading">
+        <div class="pane-header">
+          <h2 id="contextHeading">上下文</h2>
+          <button id="saveContextButton" type="button" disabled>保存上下文</button>
+        </div>
+
+        <form id="contextForm" class="context-grid">
+          <label>
+            <span>标题</span>
+            <input id="contextTitle" type="text" autocomplete="off">
+          </label>
+          <label>
+            <span>素材类型</span>
+            <input id="sourceType" type="text" autocomplete="off">
+          </label>
+          <label class="span-2">
+            <span>人物</span>
+            <textarea id="contextCharacters" rows="4"></textarea>
+          </label>
+          <label class="span-2">
+            <span>正确梗概</span>
+            <textarea id="correctSynopsis" rows="5"></textarea>
+          </label>
+          <label>
+            <span>切片重点</span>
+            <textarea id="storyFocus" rows="4"></textarea>
+          </label>
+          <label>
+            <span>允许背景</span>
+            <textarea id="externalKnowledge" rows="4"></textarea>
+          </label>
+          <label>
+            <span>禁用词</span>
+            <textarea id="forbiddenTerms" rows="4"></textarea>
+          </label>
+          <label>
+            <span>禁止剧情</span>
+            <textarea id="forbiddenStoryFacts" rows="4"></textarea>
+          </label>
+          <label>
+            <span>其他禁止内容</span>
+            <textarea id="mustNotInclude" rows="4"></textarea>
+          </label>
+          <label>
+            <span>TTS 易错词</span>
+            <textarea id="ttsTerms" rows="4"></textarea>
+          </label>
+        </form>
+      </section>
+
+      <section class="pane pane-render" aria-labelledby="renderHeading">
+        <div class="pane-header">
+          <h2 id="renderHeading">版本与渲染</h2>
+        </div>
+
+        <form id="versionForm" class="stack">
+          <label>
+            <span>目标时长（秒）</span>
+            <input id="targetDurationSeconds" type="number" min="1" step="0.1" required>
+          </label>
+          <label>
+            <span>声音模式</span>
+            <select id="audioMode">
+              <option value="pure_commentary">纯解说</option>
+              <option value="key_original_audio">关键原声</option>
+            </select>
+          </label>
+          <label>
+            <span>声音克隆 ID</span>
+            <input id="voiceCloneId" type="text" autocomplete="off">
+          </label>
+          <label>
+            <span>BGM 路径</span>
+            <input id="bgmPath" type="text" autocomplete="off">
+          </label>
+          <label>
+            <span>配音速度</span>
+            <input id="voiceoverSpeed" type="number" min="0.5" max="1.5" step="0.01" value="0.92">
+          </label>
+          <label>
+            <span>配音音量</span>
+            <input id="voiceoverVolume" type="number" min="0" step="0.01" value="1.0">
+          </label>
+          <label>
+            <span>BGM 音量</span>
+            <input id="bgmVolume" type="number" min="0" step="0.01" value="0.22">
+          </label>
+          <label>
+            <span>字幕语言</span>
+            <select id="subtitleLanguage">
+              <option value="zh">中文</option>
+              <option value="en">英文</option>
+              <option value="zh_en">中英双语</option>
+            </select>
+          </label>
+          <label>
+            <span>画幅</span>
+            <select id="aspectRatio">
+              <option value="original">原画幅</option>
+              <option value="vertical_9_16_blur">竖屏 9:16</option>
+            </select>
+          </label>
+          <label>
+            <span>版本目标</span>
+            <input id="variantGoal" type="text" value="manual" autocomplete="off">
+          </label>
+          <button id="createVersionButton" type="submit" disabled>创建版本</button>
+        </form>
+
+        <div id="versionList" class="item-list" aria-live="polite"></div>
+
+        <form id="renderForm" class="stack render-form">
+          <label>
+            <span>TTS</span>
+            <select id="ttsMode">
+              <option value="fish">Fish Audio</option>
+              <option value="ocool">Ocool</option>
+              <option value="none">不生成配音</option>
+            </select>
+          </label>
+          <label class="check-row">
+            <input id="requireLlm" type="checkbox" checked>
+            <span>使用大模型</span>
+          </label>
+          <label class="check-row">
+            <input id="forceScript" type="checkbox">
+            <span>重写文案</span>
+          </label>
+          <label class="check-row">
+            <input id="forceReview" type="checkbox">
+            <span>重新审查</span>
+          </label>
+          <label class="check-row">
+            <input id="forceHumanize" type="checkbox">
+            <span>重新口语化</span>
+          </label>
+          <label class="check-row">
+            <input id="forceTts" type="checkbox">
+            <span>重新配音</span>
+          </label>
+          <button id="startRenderButton" type="submit" disabled>开始渲染</button>
+        </form>
+
+        <div id="jobList" class="item-list" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <div id="statusMessage" class="toast" role="status" aria-live="polite"></div>
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

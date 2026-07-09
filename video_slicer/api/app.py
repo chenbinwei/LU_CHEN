@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from video_slicer.api.job_runner import PipelineJobRunner
 from video_slicer.api.project_service import create_project, create_version, update_project_context
@@ -20,15 +22,28 @@ from video_slicer.context_packet import frontend_context_schema
 from video_slicer.project_store import LocalProjectStore
 
 
+def default_frontend_dir() -> Path:
+    return Path(__file__).resolve().parents[2] / "frontend"
+
+
 def create_app(
     *,
     project_root: Path | str | None = None,
     store: LocalProjectStore | None = None,
     job_runner: Any | None = None,
+    frontend_dir: Path | str | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Video Slicer Local API", version="0.1.0")
     app.state.store = store or LocalProjectStore(project_root or "projects.local")
     app.state.job_runner = job_runner or PipelineJobRunner(store=app.state.store)
+
+    static_dir = Path(frontend_dir) if frontend_dir is not None else default_frontend_dir()
+    if static_dir.exists():
+        app.mount("/assets", StaticFiles(directory=static_dir), name="assets")
+
+        @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+        def frontend_index() -> str:
+            return (static_dir / "index.html").read_text(encoding="utf-8")
 
     @app.get("/api/health", response_model=HealthResponse)
     def health() -> HealthResponse:
