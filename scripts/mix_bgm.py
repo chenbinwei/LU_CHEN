@@ -6,7 +6,8 @@ import argparse
 import os
 from pathlib import Path
 
-from video_slicer.pipeline import add_background_music, load_dotenv
+from video_slicer.pipeline import load_dotenv
+from video_slicer.rendering import add_background_music
 
 
 def main() -> None:
