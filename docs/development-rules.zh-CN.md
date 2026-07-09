@@ -29,6 +29,7 @@
 | 项目、版本、任务字段 | `video_slicer/project_models.py` |
 | 本地项目数据读写 | `video_slicer/project_store.py` |
 | 旧 CLI 到项目记录的适配 | `video_slicer/pipeline_records.py` |
+| 本地 HTTP API、请求 schema、任务调度 | `video_slicer/api/` |
 | 大模型服务 | `llm_providers/` |
 | TTS 服务 | `tts_providers/` |
 | 声音资产本地注册 | `video_slicer/voice_registry.py` |
@@ -88,6 +89,9 @@
 
 | 模块 | 测试 |
 | --- | --- |
+| `video_slicer/api/app.py` | `tests/test_api_app.py` |
+| `video_slicer/api/project_service.py` | `tests/test_api_projects.py` |
+| `video_slicer/api/job_runner.py` | `tests/test_api_jobs.py` |
 | `video_slicer/alignment.py` | `tests/test_alignment.py` |
 | `video_slicer/rendering.py` | `tests/test_rendering.py` |
 | `video_slicer/script_generation.py` | `tests/test_script_generation.py` |
@@ -107,7 +111,7 @@
 当前推荐验证命令：
 
 ```powershell
-python -m unittest tests.test_script_generation tests.test_rendering tests.test_alignment tests.test_pipeline tests.test_project_models tests.test_project_store tests.test_pipeline_records tests.test_quality_report
+python -m unittest tests.test_api_app tests.test_api_projects tests.test_api_jobs tests.test_script_generation tests.test_rendering tests.test_alignment tests.test_pipeline tests.test_project_models tests.test_project_store tests.test_pipeline_records tests.test_quality_report
 python -m compileall video_slicer tests scripts
 ```
 

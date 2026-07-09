@@ -15,6 +15,7 @@
 | 路径 | 作用 | Git 规则 |
 | --- | --- | --- |
 | `video_slicer/` | 核心业务包：pipeline 编排、上下文包、对齐、渲染、质量报告、项目记录 | 提交 |
+| `video_slicer/api/` | 本地 FastAPI 后端：项目、上下文、版本、渲染任务和状态查询 | 提交 |
 | `llm_providers/` | 大模型 provider 适配层，例如 DashScope、OCool | 提交 |
 | `tts_providers/` | TTS provider 适配层，例如 Fish Audio、OCool | 提交 |
 | `scripts/` | 命令行入口和诊断工具 | 提交 |
@@ -56,6 +57,7 @@
 | 项目、版本、任务数据模型 | `video_slicer/project_models.py` |
 | 本地项目数据读写 | `video_slicer/project_store.py` |
 | CLI 参数到项目记录的过渡适配 | `video_slicer/pipeline_records.py` |
+| 本地 API 路由、请求 schema、后台渲染任务调度 | `video_slicer/api/` |
 | 本地声音 ID 注册表 | `video_slicer/voice_registry.py` |
 | 大模型 API 请求细节 | `llm_providers/` |
 | TTS API 请求和声音克隆细节 | `tts_providers/` |
@@ -79,6 +81,7 @@
 - 新的画面匹配、字幕证据、时间戳选择策略：放到 `video_slicer/alignment.py`。
 - 新的文案策略、审稿规则、口播润色限制、禁用词校验：放到 `video_slicer/script_generation.py`。
 - 新的质量指标或风险提示：放到 `video_slicer/quality_report.py`。
+- 新的本地 HTTP 接口、请求/响应 schema、后台任务调度：放到 `video_slicer/api/`。
 - 新的大模型服务：新增到 `llm_providers/`。
 - 新的 TTS 服务：新增到 `tts_providers/`。
 - 新的用户可配置参数：优先放到 `VersionSettings`，再由 CLI 或未来前端传入。

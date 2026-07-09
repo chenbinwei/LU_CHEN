@@ -33,6 +33,7 @@
 - `video_slicer/voice_registry.py`：本地 Fish 声音 ID 注册表工具
 - `tts_providers/`：TTS provider，当前有 Fish Audio 和 OCool fallback
 - `scripts/run_pipeline.py`：完整流程入口
+- `scripts/run_api.py`：本地 FastAPI 后端入口，供未来前端调用
 - `scripts/preview_tts.py`：单独试听 TTS，不跑完整视频
 - `scripts/check_dashscope.py`：检查 DashScope 官方 SDK 是否能正常生成文本
 - `scripts/create_fish_voice.py`：创建 Fish 声音模型并登记到本地注册表
@@ -243,6 +244,22 @@ Copy-Item 你的视频.mp4 videos/input.mp4
   --force-humanize `
   --tts-mode none
 ```
+
+## 启动本地 API
+
+后续前端会调用本地 FastAPI 后端。启动方式：
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.run_api
+```
+
+默认地址：
+
+```text
+http://127.0.0.1:8000
+```
+
+第一版 API 负责项目、上下文包、版本、渲染任务和任务状态查询；视频切片仍然复用现有 `video_slicer.pipeline`，不会从 API 层重写剪辑逻辑。
 
 ## 输出文件
 

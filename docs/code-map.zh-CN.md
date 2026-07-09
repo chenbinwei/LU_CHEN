@@ -29,6 +29,10 @@
   -> video_slicer.project_store
   -> video_slicer.pipeline_records
 
+本地 HTTP API
+  -> video_slicer.api
+    -> 项目 / 上下文 / 版本 / 渲染任务 / 状态查询
+
 外部服务
   -> llm_providers
   -> tts_providers
@@ -37,7 +41,7 @@
   -> video_slicer.quality_report
 ```
 
-目前还没有真正的前端和 FastAPI 后端。`video_slicer.pipeline` 仍然偏大，但 alignment 第一阶段已经拆出，后续重构重点应该是继续逐步拆成可复用阶段，而不是一次性推翻。
+目前还没有真正的前端；本地 FastAPI 后端已进入 MVP 阶段。`video_slicer.pipeline` 仍然偏大，但 alignment、rendering、script_generation 已经拆出，后续重构重点应该是继续逐步拆成可复用阶段，而不是一次性推翻。
 
 相关文档：
 
@@ -52,6 +56,7 @@
 | --- | --- | --- |
 | `1.py` | 兼容旧入口，最终调用 `video_slicer.pipeline` | 是 |
 | `video_slicer/` | 项目核心 Python 包 | 是 |
+| `video_slicer/api/` | 本地 FastAPI 后端：项目、上下文、版本、渲染任务和状态查询 | 是 |
 | `llm_providers/` | 大模型 provider 适配层 | 是 |
 | `tts_providers/` | TTS provider 适配层 | 是 |
 | `scripts/` | 命令行工具入口 | 是 |
@@ -223,7 +228,52 @@
 - `pipeline.py` 只负责决定何时生成、审稿、润色和写出脚本，不直接拼大段 prompt。
 - 第三方模型请求细节仍然放在 `llm_providers/`。
 
-## 5. 项目/版本/任务模型
+## 5. 本地 API 模块
+
+### `video_slicer/api/app.py`
+
+职责：
+
+- 创建 FastAPI app。
+- 暴露健康检查、上下文 schema、项目、版本、渲染任务和任务状态接口。
+- 通过依赖注入支持单元测试传入临时 `LocalProjectStore` 和 fake runner。
+
+### `video_slicer/api/schemas.py`
+
+职责：
+
+- 定义 API 请求体。
+- 保持前端字段名和 `VersionSettings`、context packet 字段一致。
+
+### `video_slicer/api/project_service.py`
+
+职责：
+
+- 复用 `LocalProjectStore` 创建项目和版本。
+- 保存完整 `context_packet`。
+- 为 pipeline 渲染写出项目级 `context.json`。
+
+### `video_slicer/api/job_runner.py`
+
+职责：
+
+- 创建和运行后台渲染任务。
+- 把 API version settings 映射成 `pipeline.run_cli()` 所需参数。
+- 限制本地同一时间只跑一个渲染任务。
+
+对应测试：
+
+- `tests/test_api_app.py`
+- `tests/test_api_projects.py`
+- `tests/test_api_jobs.py`
+
+后续规则：
+
+- API 层不能重写剪辑、对齐、文案生成、TTS 或 FFmpeg 逻辑。
+- API 层只做请求校验、状态记录和调度。
+- 如果前端需要新配置，先加到 `VersionSettings` 或 context packet，再由 API 暴露。
+
+## 6. 项目/版本/任务模型
 
 这些模块是以后接前端和商业化的基础。
 
@@ -300,7 +350,7 @@
 - 它是过渡适配层，不应该承载复杂业务。
 - 等 pipeline 真正项目化后，这个模块可以变薄或被替换。
 
-## 6. 上下文包
+## 7. 上下文包
 
 ### `video_slicer/context_packet.py`
 
@@ -324,7 +374,7 @@
 - 视频专属信息放到 `context.json`。
 - 公共叙事规则可以在 `context.example.json` 和 `context_packet.py` 中维护。
 
-## 7. 大模型 Provider
+## 8. 大模型 Provider
 
 ### `llm_providers/dashscope.py`
 
@@ -353,7 +403,7 @@
 - `pipeline.py` 不应该直接写第三方 API 请求细节。
 - Provider 输出应该尽量统一为纯文本，由 pipeline 或脚本解析 JSON。
 
-## 8. TTS Provider
+## 9. TTS Provider
 
 ### `tts_providers/fish.py`
 
@@ -383,7 +433,7 @@
 - 每个 provider 对外尽量暴露统一的 `synthesize_batch()`。
 - 声音克隆资产不要写死在代码中，使用 `.env` 或 `voice_registry`。
 
-## 9. 声音注册表
+## 10. 声音注册表
 
 ### `video_slicer/voice_registry.py`
 
@@ -405,7 +455,7 @@
 - 商业版中它会演进成声音资产表。
 - 本地注册表文件不要提交。
 
-## 10. 质量报告
+## 11. 质量报告
 
 ### `video_slicer/quality_report.py`
 
@@ -440,12 +490,13 @@
 - 观察几轮后，再决定是否升级成硬失败。
 - 不要把质量判断散落在 `pipeline.py` 各处。
 
-## 11. Scripts 目录
+## 12. Scripts 目录
 
 | 文件 | 作用 |
 | --- | --- |
 | `scripts/run_pipeline.py` | 完整 pipeline 入口 |
 | `scripts/run_batch.py` | 按 JSON 清单批量跑多个任务 |
+| `scripts/run_api.py` | 启动本地 FastAPI 后端 |
 | `scripts/preview_tts.py` | 只试听 TTS |
 | `scripts/create_fish_voice.py` | 创建 Fish 声音模型 |
 | `scripts/mix_bgm.py` | 对已有成片单独混 BGM |
@@ -460,10 +511,13 @@
 - 复杂逻辑放回 `video_slicer/`。
 - 脚本不要互相调用脚本，应该调用同一个核心模块。
 
-## 12. Tests 目录
+## 13. Tests 目录
 
 | 文件 | 覆盖模块 |
 | --- | --- |
+| `tests/test_api_app.py` | `video_slicer.api.app` |
+| `tests/test_api_projects.py` | `video_slicer.api.project_service` 和项目/版本 API |
+| `tests/test_api_jobs.py` | `video_slicer.api.job_runner` 和渲染任务 API |
 | `tests/test_alignment.py` | `video_slicer.alignment` |
 | `tests/test_rendering.py` | `video_slicer.rendering` |
 | `tests/test_pipeline.py` | `video_slicer.pipeline` 中仍未拆出的可测试纯逻辑 |
@@ -478,7 +532,7 @@
 - Provider 网络调用不要直接写成必须联网的单元测试。
 - FFmpeg 真实成片测试可以后面单独放到集成测试。
 
-## 13. 输出文件关系
+## 14. 输出文件关系
 
 一次 pipeline 运行主要输出：
 
@@ -505,7 +559,7 @@
 - 前端优先读取项目/版本/任务记录。
 - 中间文件可以作为调试和复跑缓存。
 
-## 14. 后续重构顺序建议
+## 15. 后续重构顺序建议
 
 不要一次性重写。建议按下面顺序拆：
 
@@ -619,7 +673,7 @@
 - 渲染成片。
 - 查询任务状态。
 
-## 15. 新功能放置规则
+## 16. 新功能放置规则
 
 以后新增功能时，优先按这个表判断放哪里：
 
@@ -632,10 +686,11 @@
 | 新质量检查 | `quality_report.py` |
 | 新命令行入口 | `scripts/` |
 | 新剪辑/混音能力 | `video_slicer/rendering.py` |
+| 新本地 HTTP API / schema / 任务调度 | `video_slicer/api/` |
 | 新文案策略 | `video_slicer/script_generation.py`；视频专属事实仍放 `context.json` 或项目数据 |
 | 前端可编辑字段 | `frontend_context_schema()` 或未来 API schema |
 
-## 16. 当前最重要的管理原则
+## 17. 当前最重要的管理原则
 
 1. 不把某个视频的人名、剧情、禁用词写进通用代码。
 2. 不把第三方 API 请求细节写进 pipeline 主流程。
