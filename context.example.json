@@ -21,6 +21,28 @@
     "target_duration_seconds": 120,
     "avoid": ["普通字幕摘要", "无根据补剧情", "英文词", "错别字", "错词"]
   },
+  "narration_rules": {
+    "point_of_view": "third_person_commentary",
+    "narrator_role": "professional_film_commentator",
+    "forbid_first_person_roleplay": true,
+    "forbid_dialogue_reenactment": true,
+    "forbid_direct_dialogue_as_voiceover": true,
+    "dialogue_quote_policy": "只把关键台词作为事实简短提及，不要让配音演员表演角色台词。",
+    "must_tell_story_not_subtitles": true,
+    "story_requirements": [
+      "开头先抛出冲突和悬念",
+      "用第三人称交代人物关系和场景",
+      "按冲突升级讲清楚人物心理变化",
+      "用画面和表演细节支撑判断",
+      "结尾落在片段的结果或意义上"
+    ],
+    "voiceover_must_not": [
+      "让配音演员扮演角色说话",
+      "连续复述原片台词",
+      "把角色台词改写成第一人称旁白",
+      "用大段问句和命令句冒充解说"
+    ]
+  },
   "allowed_external_knowledge": [
     "只有你明确允许模型使用的外部背景才写在这里"
   ],

@@ -21,20 +21,20 @@ class ProjectModelsTest(unittest.TestCase):
             source_video_path="videos/demo.mp4",
             source_duration_seconds=300.0,
             user_context=UserContext(
-                work_title="征服",
-                main_characters=["刘华强", "封彪"],
-                synopsis="刘华强逼封彪低头。",
-                must_mentions=["下跪叫爷"],
-                forbidden_content=["买瓜剧情"],
+                work_title="作品A",
+                main_characters=["角色甲", "角色乙"],
+                synopsis="角色甲和角色乙发生关键冲突。",
+                must_mentions=["关键转折"],
+                forbidden_content=["无关剧情"],
             ),
         )
 
         restored = ProjectRecord.from_dict(project.to_dict())
 
         self.assertEqual(restored.project_id, "project_demo")
-        self.assertEqual(restored.user_context.work_title, "征服")
-        self.assertEqual(restored.user_context.main_characters, ["刘华强", "封彪"])
-        self.assertEqual(restored.user_context.forbidden_content, ["买瓜剧情"])
+        self.assertEqual(restored.user_context.work_title, "作品A")
+        self.assertEqual(restored.user_context.main_characters, ["角色甲", "角色乙"])
+        self.assertEqual(restored.user_context.forbidden_content, ["无关剧情"])
         self.assertEqual(restored.data_region, "local")
         self.assertEqual(restored.privacy_flags["contains_voice_clone"], False)
         self.assertEqual(restored.retention_until, "")

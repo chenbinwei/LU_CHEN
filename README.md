@@ -6,8 +6,9 @@
 
 - 默认输入视频：`videos/input.mp4`
 - 上下文模板：`context.example.json`
-- 文本模型：`gpt-4.1`
+- 文本模型：`qwen-plus-latest`
 - 真人口播润色模型：`qwen-plus-latest`
+- 文本接口：DashScope 官方 SDK
 - TTS provider：`fish`
 - Fish TTS 模型：`s2.1-pro-free`
 - Fish 声音模型：通过 `.env` 里的 `FISH_REFERENCE_ID` 指定
@@ -19,11 +20,14 @@
 
 - `1.py`：兼容旧命令的薄入口，内部转到 `video_slicer.pipeline`
 - `video_slicer/pipeline.py`：完整视频切片主流程
+- `video_slicer/context_packet.py`：上下文包加载、默认叙事规则和前端字段 schema
 - `video_slicer/voice_registry.py`：本地 Fish 声音 ID 注册表工具
 - `tts_providers/`：TTS provider，当前有 Fish Audio 和 OCool fallback
 - `scripts/run_pipeline.py`：完整流程入口
 - `scripts/preview_tts.py`：单独试听 TTS，不跑完整视频
+- `scripts/check_dashscope.py`：检查 DashScope 官方 SDK 是否能正常生成文本
 - `scripts/create_fish_voice.py`：创建 Fish 声音模型并登记到本地注册表
+- `scripts/context_schema.py`：导出未来前端可编辑的上下文包 schema
 - `scripts/run_batch.py`：按 JSON 清单批量跑多个视频
 - `batch.example.json`：批量任务模板
 
@@ -43,6 +47,7 @@
 - `batch.example.json`：批量任务模板
 - `videos/.gitkeep`：保留空的视频目录
 - `assets/voice_refs/.gitkeep`：保留声音参考目录
+- `assets/bgm/.gitkeep`：保留背景音乐目录
 
 不要提交这些文件：
 
@@ -79,10 +84,19 @@ python -m venv .venv
 Copy-Item .env.example .env
 ```
 
-打开 `.env`，先填 OCool key。这个 key 仍然用于文案生成、审稿和真人口播润色：
+打开 `.env`，先填 DashScope key。这个 key 用于文案生成、语义审稿和真人口播润色：
 
 ```env
-OCOOL_API_KEY=put_your_ocool_api_key_here
+DASHSCOPE_API_KEY=put_your_dashscope_api_key_here
+DASHSCOPE_BASE_URL=https://dashscope-intl.aliyuncs.com/api/v1
+DASHSCOPE_MODEL=qwen-plus-latest
+DASHSCOPE_HUMANIZE_MODEL=qwen-plus-latest
+DASHSCOPE_ENABLE_THINKING=false
+DASHSCOPE_MAX_TOKENS=7000
+DASHSCOPE_REPAIR_MAX_TOKENS=8000
+DASHSCOPE_RETRIES=2
+DASHSCOPE_TIMEOUT=90
+DURATION_TOLERANCE=3.0
 ```
 
 如果要使用 Fish Audio 配音和声音克隆，再填：
@@ -94,6 +108,37 @@ FISH_REFERENCE_ID=
 ```
 
 `s2.1-pro-free` 是 Fish Audio 的免费开发/测试模型。它适合 demo 和原型验证，但没有延迟和可用性保证。`FISH_REFERENCE_ID` 先留空。创建声音模型后，把 Fish 返回的 `_id` 填进去。
+
+如果想给最终成片垫一层背景音乐，可以额外填：
+
+```env
+BGM_AUDIO=assets/bgm/your_bgm.mp3
+BGM_VOLUME=0.25
+VOICEOVER_VOLUME=1.0
+BGM_START=0
+BGM_FADE_IN=0
+BGM_FADE_OUT=2.5
+```
+
+BGM 是可选后处理层。不开时只生成 `final_with_voiceover.mp4`；开启后会额外生成 `final_with_bgm.mp4`，原始配音成片仍然保留。混音时会自动循环并裁剪 BGM 到最终视频长度，支持从音乐中间开始取，并在片头片尾做淡入淡出。
+
+## 目标时长控制
+
+`--target-duration` 不是只给大模型看的建议值。流程会先生成真实 TTS 配音，读取每句真实音频时长；如果总时长和目标差距超过 `DURATION_TOLERANCE`，程序会自动对配音做时间拉伸或压缩，再用调整后的真实配音时长重新剪辑画面。
+
+默认容忍范围是 3 秒：
+
+```env
+DURATION_TOLERANCE=3.0
+```
+
+例如目标是 120 秒，而 Fish Audio 原始配音只有 75 秒，程序会把配音整体放慢，并重新生成约 120 秒的视频。最终写出 `final_with_voiceover.mp4` 和 `final_with_bgm.mp4` 后，还会用 `ffprobe` 校验真实成片时长；如果超出容忍范围会直接失败，而不是静默产出一个明显不对的成片。
+
+调试原始 TTS 速度时可以加：
+
+```powershell
+--no-fit-duration
+```
 
 `.env` 已经被 `.gitignore` 忽略，不要手动把它加进 Git。
 
@@ -107,12 +152,24 @@ Copy-Item context.example.json context.json
 
 `context.json` 是本地运行时读取的上下文包。你可以在里面改视频标题、人物关系、剧情梗概、禁用词和解说风格。
 
+这个文件是每个视频项目自己的“事实包/创作配置”，不是公共代码。换视频时应该换一份新的 `context.json`，不要把某个视频的人名、剧情或禁用词写进 `video_slicer/` 里的通用代码。
+
 其中这几个字段和复用关系最大：
 
+- `characters`：片段里的人物、身份、关系和动机。
+- `correct_synopsis`：这个视频真实发生了什么，是防止模型乱补剧情的主依据。
+- `story_focus`：切片必须讲清楚的重点。
+- `narration_rules`：叙事视角和口播边界，例如第三人称解说、禁止角色扮演、禁止连续复述台词。
 - `forbidden_terms`：不允许出现在文案里的词。
 - `forbidden_story_facts`：不允许模型写错的剧情方向。
 - `humanize_unsafe_detail_terms`：某个视频里容易被模型脑补、但没有证据的画面细节。
 - `tts_unfriendly_terms`：TTS 容易读错或听起来别扭的表达。
+
+未来做前端时，可以先用这个命令导出可编辑字段 schema：
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.context_schema --output outputs/context_schema.json
+```
 
 ## 放入视频
 
@@ -131,10 +188,27 @@ Copy-Item 你的视频.mp4 videos/input.mp4
   --input videos/input.mp4 `
   --context context.json `
   --target-duration 120 `
-  --ocool-model gpt-4.1 `
-  --ocool-humanize-model qwen-plus-latest `
+  --dashscope-model qwen-plus-latest `
+  --dashscope-humanize-model qwen-plus-latest `
   --require-llm `
   --tts-mode fish
+```
+
+如果要混入背景音乐，在 `.env` 填 `BGM_AUDIO`，或者运行时加：
+
+```powershell
+--bgm-audio assets/bgm/your_bgm.mp3 --bgm-volume 0.16 --voiceover-volume 1.0 --bgm-start 0 --bgm-fade-in 0.8 --bgm-fade-out 2.5
+```
+
+如果已经有 `final_with_voiceover.mp4`，只想反复试听 BGM 起点和音量，不需要重新跑完整流程：
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.mix_bgm `
+  --input outputs/final_with_voiceover.mp4 `
+  --output outputs/final_with_bgm.mp4 `
+  --bgm-audio assets/bgm/your_bgm.mp3 `
+  --bgm-volume 0.16 `
+  --bgm-start 0
 ```
 
 旧入口仍然可用：
@@ -166,6 +240,7 @@ Copy-Item 你的视频.mp4 videos/input.mp4
 运行后主要看这些文件：
 
 - `outputs/final_with_voiceover.mp4`：最终带新配音的视频
+- `outputs/final_with_bgm.mp4`：可选，带新配音和背景音乐的视频
 - `outputs/output.mp4`：无原声的剪辑预览
 - `outputs/voiceover_script.txt`：大模型生成并审查后的配音文案
 - `outputs/voiceover_script.json`：配音文案、来源字幕和上下文引用
@@ -235,7 +310,7 @@ FISH_REFERENCE_ID=返回的_id
 ```powershell
 .\.venv\Scripts\python.exe -m scripts.preview_tts `
   --provider fish `
-  --text "刘华强语气平静，但意思很清楚：机会给了，是你没接住。" `
+  --text "这个片段的冲突，从主角走进房间那一刻就已经开始了。" `
   --output outputs/fish_preview.mp3
 ```
 
@@ -264,3 +339,35 @@ Copy-Item batch.example.json batch.local.json
 ```
 
 每个 job 建议使用独立 `output_dir`，例如 `outputs/job_001`、`outputs/job_002`，这样批量生产时不会互相覆盖。
+## 本地项目数据结构
+
+项目正在从单个 demo pipeline 演进为“一个素材，多版本成片”的产品结构。
+
+本地数据默认写入：
+
+```text
+projects.local/
+  projects/
+    <project_id>/
+      project.json
+      versions/
+        <version_id>.json
+      jobs/
+        <job_id>.json
+```
+
+这类数据是本地运行产物，不应该提交到 Git。
+
+项目记录会预留隐私和数据治理字段：
+
+- `user_id`：本地模式为 `local_user`，未来用于账号归属。
+- `data_region`：本地模式为 `local`，未来用于云端数据区域。
+- `privacy_flags`：标记是否包含声音克隆、人物音频、敏感内容。
+- `retention_until`：未来用于自动清理。
+- `deleted_at`：未来用于软删除和异步物理删除。
+
+### 概念
+
+- 项目：一个原视频素材。
+- 版本：同一个素材的一套成片方案，例如 60 秒纯解说版、120 秒关键原声版。
+- 任务：一次生成或渲染动作，记录当前阶段、状态、导出路径和最终成片时长。

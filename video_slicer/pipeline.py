@@ -7,11 +7,19 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from video_slicer.context_packet import (
+    compact_context_for_prompt,
+    load_context_packet,
+    narration_rules_for_prompt,
+)
+
 DEFAULT_INPUT = "videos/input.mp4"
 DEFAULT_OUTPUT_DIR = "outputs"
 DEFAULT_CONTEXT_PATH = "context.json"
+DEFAULT_DASHSCOPE_BASE_URL = "https://dashscope-intl.aliyuncs.com/api/v1"
+DEFAULT_DASHSCOPE_MODEL = "qwen-plus-latest"
 DEFAULT_OCOOL_BASE_URL = "https://one.ocoolai.com/v1"
-DEFAULT_OCOOL_MODEL = "gpt-4.1"
+DEFAULT_OCOOL_MODEL = "qwen-plus-latest"
 DEFAULT_FISH_BASE_URL = "https://api.fish.audio"
 
 
@@ -76,27 +84,6 @@ def ffprobe_duration_media(media_path: Path) -> float:
 
 def ffprobe_duration(video_path: Path) -> float:
     return ffprobe_duration_media(video_path)
-
-
-
-
-def load_context_packet(path: Path | None) -> dict[str, Any]:
-    if path is None or not str(path).strip():
-        return {}
-    if not path.exists():
-        print(f"Context packet not found, continue without it: {path}")
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
-    except json.JSONDecodeError as exc:
-        raise SystemExit(f"Invalid context packet JSON: {path}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise SystemExit(f"Context packet must be a JSON object: {path}")
-    data = dict(data)
-    data["_context_path"] = str(path)
-    print(f"Loaded context packet: {path}")
-    return data
-
 
 def extract_audio(video_path: Path, audio_path: Path, force: bool) -> None:
     if audio_path.exists() and not force:
@@ -209,6 +196,79 @@ def transcript_for_prompt(segments: list[dict[str, Any]]) -> str:
     return "\n".join(rows)
 
 
+def compact_voiceover_generation_instructions() -> str:
+    return """
+你是专业中文影视解说剪辑师。根据字幕和人工上下文包，生成约两分钟的故事型配音文案。
+
+硬规则：
+- 只输出严格合法 JSON，不要 Markdown，不要解释。所有对象和数组元素之间必须有逗号，禁止尾逗号，禁止省略引号。
+- 只能使用 transcript 和 context_packet 中的信息；没有证据就保守表达。
+- 可以使用 context_packet 中明确给出的人名、剧情背景和禁用规则。
+- 严禁出现英文字母、英文单词、错别字、错词、禁用词和上下文包禁止的剧情。
+- 文案要像真人影视解说，不要像字幕摘要；要有开头钩子、人物关系、冲突升级、转折和收束。
+- voiceover 输出 20 到 28 条短句；每条 12 到 36 个中文字符，适合直接配音。
+- 每条必须给 source_segment_ids，id 必须来自 transcript，尽量按原片时间顺序。
+- 如果一句用了上下文包信息，context_refs 必须标明字段名。
+- 不要写“说得平”“意思很明白”；用“语气平静”“意思很清楚”等自然表达。
+
+JSON schema:
+{
+  "title": "短标题",
+  "summary": "一句话概括",
+  "story_plan": [
+    {
+      "role": "hook/setup/conflict/escalation/turning_point/payoff",
+      "description": "这一段讲什么",
+      "source_segment_ids": [1, 2],
+      "context_refs": ["correct_synopsis"]
+    }
+  ],
+  "voiceover": [
+    {
+      "text": "一句中文解说文案",
+      "source_segment_ids": [1, 2],
+      "context_refs": ["correct_synopsis"],
+      "story_role": "hook/setup/conflict/escalation/turning_point/payoff",
+      "confidence": 0.8,
+      "visual_note": "对应画面"
+    }
+  ],
+  "evidence_notes": ["说明哪些信息来自字幕或上下文包"]
+}
+""".strip()
+
+
+def compact_voiceover_review_instructions() -> str:
+    return """
+你是中文影视解说终审编辑。检查候选脚本是否像完整故事，是否符合字幕和上下文包证据，是否适合 TTS 直接念。
+
+必须修正：
+- 编造事实、错别字、错词、不自然口播、英文、禁用词。
+- 不符合 context_packet.correct_synopsis、forbidden_terms、forbidden_story_facts、must_not_include 的内容。
+- source_segment_ids 不存在或明显错位的问题。
+
+保持候选脚本结构，输出严格合法 JSON，不要 Markdown，不要解释。所有对象和数组元素之间必须有逗号，禁止尾逗号。voiceover 仍保持 20 到 28 条短句，不能合成长段。
+额外包含 reviewed=true、review_notes、read_aloud_checks。
+""".strip()
+
+
+def voiceover_length_requirements(target_duration: float) -> dict[str, int]:
+    seconds = max(15.0, float(target_duration or 120.0))
+    min_items = max(8, min(60, round(seconds / 4.2)))
+    max_items = max(min_items + 4, min(75, round(seconds / 3.0)))
+    min_cjk_chars = max(120, round(seconds * 5.6))
+    max_cjk_chars = max(min_cjk_chars + 80, round(seconds * 7.2))
+    ideal_cjk_chars = round((min_cjk_chars + max_cjk_chars) / 2)
+    return {
+        "target_duration_seconds": round(seconds),
+        "min_voiceover_items": min_items,
+        "max_voiceover_items": max_items,
+        "min_total_cjk_chars": min_cjk_chars,
+        "max_total_cjk_chars": max_cjk_chars,
+        "ideal_total_cjk_chars": ideal_cjk_chars,
+    }
+
+
 def extract_response_text(response: Any) -> str:
     text = getattr(response, "output_text", None)
     if text:
@@ -241,6 +301,28 @@ def parse_json_response(text: str) -> dict[str, Any]:
         if not match:
             raise
         return json.loads(match.group(0))
+
+
+def parse_llm_json_response(text: str, *, model: str, base_url: str, api_key: str) -> dict[str, Any]:
+    try:
+        return parse_json_response(text)
+    except json.JSONDecodeError as exc:
+        print(f"LLM returned invalid JSON, trying one repair pass: {exc}")
+        from llm_providers.dashscope import text_completion
+
+        repair_instructions = """
+你是 JSON 修复器。输入是一段接近 JSON 的模型输出，可能缺少逗号、含有 Markdown 包裹、尾逗号或字符串引号错误。
+只修复为严格合法 JSON，不要改写含义，不要增删字段，不要输出解释，不要输出 Markdown。
+""".strip()
+        repaired = text_completion(
+            model=model,
+            instructions=repair_instructions,
+            input_text=text,
+            base_url=base_url,
+            api_key=api_key,
+            max_tokens=int(os.environ.get("DASHSCOPE_REPAIR_MAX_TOKENS", "5000")),
+        )
+        return parse_json_response(repaired)
 
 
 DEFAULT_FORBIDDEN_TERMS = [
@@ -306,6 +388,57 @@ def blocked_humanize_terms(text: str, context_packet: dict[str, Any] | None) -> 
     return sorted(set(blocked), key=lambda item: item.lower())
 
 
+def narration_style_violations(voiceover_doc: dict[str, Any], context_packet: dict[str, Any] | None) -> list[str]:
+    rules = (context_packet or {}).get("narration_rules", {})
+    if not isinstance(rules, dict):
+        return []
+
+    items = [
+        str(item.get("text", "")).strip()
+        for item in voiceover_doc.get("voiceover", [])
+        if isinstance(item, dict) and str(item.get("text", "")).strip()
+    ]
+    if not items:
+        return []
+
+    violations: list[str] = []
+    roleplay_pattern = re.compile(r"(?:^|[，。！？、\s])(?:我|我们|咱们|你|你们)(?:$|[，。！？、\s]|[^的])")
+    command_pattern = re.compile(r"^(?:看|注意|听|别|不要|来|给|听着|记住|都|谁|怎么|现在|今天)")
+    direct_quote_pattern = re.compile(r"[“”‘’\"']")
+
+    if rules.get("forbid_first_person_roleplay", True):
+        roleplay_lines = [text for text in items if roleplay_pattern.search(text)]
+        limit = max(3, int(len(items) * 0.2))
+        if len(roleplay_lines) > limit:
+            examples = " / ".join(roleplay_lines[:5])
+            violations.append(
+                f"too many first/second-person roleplay lines ({len(roleplay_lines)}/{len(items)}): {examples}"
+            )
+
+    if rules.get("forbid_dialogue_reenactment", True) or rules.get("forbid_direct_dialogue_as_voiceover", True):
+        direct_quote_lines = [text for text in items if direct_quote_pattern.search(text)]
+        quote_limit = max(1, int(len(items) * 0.05))
+        if len(direct_quote_lines) > quote_limit:
+            examples = " / ".join(direct_quote_lines[:5])
+            violations.append(
+                f"too many direct quote/dialogue lines ({len(direct_quote_lines)}/{len(items)}): {examples}"
+            )
+
+        dialogue_like_lines = [
+            text
+            for text in items
+            if len(text) <= 14 and (roleplay_pattern.search(text) or command_pattern.search(text) or text.endswith(("？", "?", "！", "!")))
+        ]
+        limit = max(4, int(len(items) * 0.25))
+        if len(dialogue_like_lines) > limit:
+            examples = " / ".join(dialogue_like_lines[:6])
+            violations.append(
+                f"too many dialogue-like short lines ({len(dialogue_like_lines)}/{len(items)}): {examples}"
+            )
+
+    return violations
+
+
 def forbidden_terms_from_context(context_packet: dict[str, Any] | None) -> list[str]:
     terms = list(DEFAULT_FORBIDDEN_TERMS)
     terms.extend(terms_from_context(context_packet, (
@@ -336,6 +469,9 @@ def validate_voiceover_doc(voiceover_doc: dict[str, Any], context_packet: dict[s
     tts_blocked = find_terms_in_text(text, tts_unfriendly_terms_from_context(context_packet))
     if tts_blocked:
         raise SystemExit("Voiceover text contains TTS-unfriendly terms: " + ", ".join(tts_blocked))
+    style_blocked = narration_style_violations(voiceover_doc, context_packet)
+    if style_blocked:
+        raise SystemExit("Voiceover violates narration rules: " + "; ".join(style_blocked))
 
 
 def select_clips_with_llm(
@@ -345,19 +481,11 @@ def select_clips_with_llm(
     model: str,
     base_url: str,
 ) -> dict[str, Any] | None:
-    api_key = os.environ.get("OCOOL_API_KEY")
+    api_key = os.environ.get("DASHSCOPE_API_KEY")
     if not api_key:
-        print("OCOOL_API_KEY is empty. Using rule-based clip selection.")
+        print("DASHSCOPE_API_KEY is empty. Using rule-based clip selection.")
         return None
 
-    try:
-        from openai import OpenAI
-    except ImportError as exc:
-        raise SystemExit(
-            "OpenAI SDK is required for OCool calls. Run: .\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt"
-        ) from exc
-
-    client = OpenAI(api_key=api_key, base_url=base_url)
     payload = {
         "target_duration_seconds": target_duration,
         "video_duration_seconds": video_duration,
@@ -387,14 +515,17 @@ JSON schema:
         + json.dumps(payload, ensure_ascii=False)
     )
 
-    print(f"Calling OCool model: {model}")
-    response = client.responses.create(
+    print(f"Calling DashScope model: {model}")
+    from llm_providers.dashscope import text_completion
+
+    text = text_completion(
         model=model,
         instructions=instructions,
-        input=prompt,
+        input_text=prompt,
+        base_url=base_url,
+        api_key=api_key,
     )
-    text = extract_response_text(response)
-    return parse_json_response(text)
+    return parse_llm_json_response(text, model=model, base_url=base_url, api_key=api_key)
 
 
 def select_clips_rule_based(segments: list[dict[str, Any]], target_duration: float) -> dict[str, Any]:
@@ -437,7 +568,7 @@ def select_clips_rule_based(segments: list[dict[str, Any]], target_duration: flo
         })
 
     return {
-        "summary": "Rule-based fallback selection. Add OCOOL_API_KEY for semantic clip selection.",
+        "summary": "Rule-based fallback selection. Add DASHSCOPE_API_KEY for semantic clip selection.",
         "clips": clips,
     }
 
@@ -602,17 +733,10 @@ def generate_voiceover_with_llm(
     base_url: str,
     context_packet: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    api_key = os.environ.get("OCOOL_API_KEY")
-    if not api_key or api_key == "put_your_ocool_api_key_here":
-        print("OCOOL_API_KEY is empty. Using local fallback voiceover draft.")
+    api_key = os.environ.get("DASHSCOPE_API_KEY")
+    if not api_key or api_key == "put_your_dashscope_api_key_here":
+        print("DASHSCOPE_API_KEY is empty. Using local fallback voiceover draft.")
         return None
-
-    try:
-        from openai import OpenAI
-    except ImportError as exc:
-        raise SystemExit(
-            "OpenAI SDK is required for OCool calls. Run: .\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt"
-        ) from exc
 
     transcript = [
         {
@@ -647,22 +771,24 @@ def generate_voiceover_with_llm(
 6. payoff：用一句有力度的结尾收住故事。
 
 严格规则：
-- 可以使用 context_packet 中明确给出的名字、人物关系、背景，例如“刘华强”。
+- 可以使用 context_packet 中明确给出的名字、人物关系、背景。
 - 如果字幕和 context_packet 都没有提供某个事实，不能编造；宁可写“这个男人”“对方”“主角”。
 - 不要把外部常识当作视频事实，除非 allowed_external_knowledge 明确提供。
 - 每句配音必须绑定 source_segment_ids，后续程序会按这些片段反查原视频画面。
 - 每句配音如果使用了上下文包的信息，必须在 context_refs 中写明引用的字段或实体名。
 - source_segment_ids 必须来自 transcript，尽量连续；整体故事按原视频时序推进，除非开头 hook 需要短暂前置高能片段。
 - 文案要适合配音，短句为主，有节奏，有口语感，不要复述字幕，不要写成影评论文。
+- 不要把角色台词原样放进配音，不要用引号模拟对话；把台词改写成第三人称影视解说，例如“他冷声质问对方是否认识自己”。
 - 避免 TTS 容易读错或听起来别扭的省略表达，例如“说得平”“意思很明白”；这类句子应改成“语气平静”“意思很清楚”。
 - 严禁出现英文字母或英文单词；如果候选里有英文，必须改成纯中文。
 - 必须遵守 context_packet.correct_synopsis、forbidden_terms、forbidden_story_facts、must_not_include；上下文包禁止的错误剧情和词语绝不能出现。
 - 如果 context_packet.forbidden_terms 中的任何词出现在候选文案里，必须改写到完全不出现。
-- voiceover 必须输出 20 到 35 条短句；每条对应一个可剪辑画面，不要写成长段落。
-- 每句 10 到 32 个中文字符为宜；总字数按 target_duration_seconds 控制。
+- 必须严格按 length_requirements 控制 voiceover 条数和总中文字符数；不要靠放慢 TTS 凑时长。
+- 每条对应一个可剪辑画面，不要写成长段落；每句 14 到 46 个中文字符为宜。
+- 总字数要落在 length_requirements.min_total_cjk_chars 到 length_requirements.max_total_cjk_chars 之间，优先接近 ideal_total_cjk_chars。
 - 不要为了凑时长硬写废话，宁可让每句更有信息密度。
 
-只输出 JSON，不要输出 Markdown，不要输出解释。
+只输出严格合法 JSON，不要输出 Markdown，不要输出解释。所有对象和数组元素之间必须有逗号，禁止尾逗号，禁止省略引号。
 JSON schema:
 {
   "title": "短标题",
@@ -672,7 +798,7 @@ JSON schema:
       "role": "hook/setup/conflict/escalation/turning_point/payoff",
       "description": "这一段讲什么、为什么要放进切片",
       "source_segment_ids": [1, 2, 3],
-      "context_refs": ["video_title", "known_people.刘华强"]
+      "context_refs": ["video_title", "characters.人物名"]
     }
   ],
   "voiceover": [
@@ -690,23 +816,30 @@ JSON schema:
   ]
 }
 """.strip()
+    context_for_prompt = compact_context_for_prompt(context_packet)
+    length_requirements = voiceover_length_requirements(target_duration)
+    instructions = instructions + "\n\n" + narration_rules_for_prompt(context_for_prompt)
     prompt = json.dumps(
         {
             "target_duration_seconds": target_duration,
-            "context_packet": context_packet,
-            "transcript": transcript,
+            "length_requirements": length_requirements,
+            "context_packet": context_for_prompt,
+            "transcript": transcript_for_prompt(segments),
         },
         ensure_ascii=False,
     )
 
-    print(f"Calling OCool for voiceover script: {model}")
-    client = OpenAI(api_key=api_key, base_url=base_url)
-    response = client.responses.create(
+    print(f"Calling DashScope for voiceover script: {model}")
+    from llm_providers.dashscope import text_completion
+
+    text = text_completion(
         model=model,
         instructions=instructions,
-        input=prompt,
+        input_text=prompt,
+        base_url=base_url,
+        api_key=api_key,
     )
-    return parse_json_response(extract_response_text(response))
+    return parse_llm_json_response(text, model=model, base_url=base_url, api_key=api_key)
 
 
 
@@ -719,17 +852,10 @@ def review_voiceover_with_llm(
     base_url: str,
     context_packet: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    api_key = os.environ.get("OCOOL_API_KEY")
-    if not api_key or api_key == "put_your_ocool_api_key_here":
-        print("OCOOL_API_KEY is empty. Skip semantic review.")
+    api_key = os.environ.get("DASHSCOPE_API_KEY")
+    if not api_key or api_key == "put_your_dashscope_api_key_here":
+        print("DASHSCOPE_API_KEY is empty. Skip semantic review.")
         return None
-
-    try:
-        from openai import OpenAI
-    except ImportError as exc:
-        raise SystemExit(
-            "OpenAI SDK is required for OCool calls. Run: .\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt"
-        ) from exc
 
     transcript = [
         {
@@ -753,16 +879,18 @@ def review_voiceover_with_llm(
 4. 错别字错词：修正同音错词、错称谓、标点造成的断句问题。
 5. TTS 可读性：避免生僻符号、英文缩写、过长句和不自然省略表达；数字和称谓要适合直接念出来。不要使用“说得平”“意思很明白”，应改成“语气平静”“意思很清楚”。所有最终文案必须是纯中文和中文标点，不允许出现英文字母。
 6. 画面想象：每句文案都要能对应到原片画面，visual_note 要说明用什么画面支撑这句话。
+7. 解说身份：不得用引号复述角色台词，不得写成角色对话或命令口吻；把台词信息转述成第三人称解说。
 
 严格规则：
 - 不要编造 transcript 和 context_packet 都没有的信息。
 - 可以补充 context_packet.allowed_external_knowledge 明确允许的背景，但必须在 context_refs 中标注。
 - 不要输出“本片讲了”“视频中可以看到”这类空泛话术，要直接讲故事。
+- 不要出现“看”“听”“注意”这类对观众下指令的开头。
 - 必须检查 context_packet.correct_synopsis、forbidden_terms、forbidden_story_facts、must_not_include，违反则重写。
 - 每句 source_segment_ids 必须来自 transcript；如调整文案，也要保留或修正对应来源。
-- 保持总时长接近 target_duration_seconds；120 秒目标通常需要 20 到 35 条短句，不要合并成长段。
+- 保持总时长接近 target_duration_seconds；必须按 length_requirements 检查条数和总中文字符数，不要合并成长段。
 - 优先保证故事质量和信息密度。
-- 输出必须是完整 JSON，不要 Markdown，不要解释。
+- 输出必须是严格合法 JSON，不要 Markdown，不要解释。所有对象和数组元素之间必须有逗号，禁止尾逗号。
 
 返回 JSON schema 与候选脚本一致，但必须额外包含：
 {
@@ -771,24 +899,31 @@ def review_voiceover_with_llm(
   "read_aloud_checks": ["说明口播/TTS 层面已检查的点"]
 }
 """.strip()
+    context_for_prompt = compact_context_for_prompt(context_packet)
+    length_requirements = voiceover_length_requirements(target_duration)
+    instructions = instructions + "\n\n" + narration_rules_for_prompt(context_for_prompt)
     prompt = json.dumps(
         {
             "target_duration_seconds": target_duration,
-            "context_packet": context_packet or {},
-            "transcript": transcript,
+            "length_requirements": length_requirements,
+            "context_packet": context_for_prompt,
+            "transcript": transcript_for_prompt(segments),
             "candidate_script": voiceover_doc,
         },
         ensure_ascii=False,
     )
 
-    print(f"Calling OCool for semantic script review: {model}")
-    client = OpenAI(api_key=api_key, base_url=base_url)
-    response = client.responses.create(
+    print(f"Calling DashScope for semantic script review: {model}")
+    from llm_providers.dashscope import text_completion
+
+    text = text_completion(
         model=model,
         instructions=instructions,
-        input=prompt,
+        input_text=prompt,
+        base_url=base_url,
+        api_key=api_key,
     )
-    reviewed = parse_json_response(extract_response_text(response))
+    reviewed = parse_llm_json_response(text, model=model, base_url=base_url, api_key=api_key)
     if not isinstance(reviewed.get("voiceover"), list) or not reviewed["voiceover"]:
         raise ValueError("Semantic review did not return a non-empty voiceover list.")
     reviewed["reviewed"] = True
@@ -803,17 +938,10 @@ def humanize_voiceover_with_llm(
     base_url: str,
     context_packet: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    api_key = os.environ.get("OCOOL_API_KEY")
-    if not api_key or api_key == "put_your_ocool_api_key_here":
-        print("OCOOL_API_KEY is empty. Skip voiceover humanization.")
+    api_key = os.environ.get("DASHSCOPE_API_KEY")
+    if not api_key or api_key == "put_your_dashscope_api_key_here":
+        print("DASHSCOPE_API_KEY is empty. Skip voiceover humanization.")
         return None
-
-    try:
-        from openai import OpenAI
-    except ImportError as exc:
-        raise SystemExit(
-            "OpenAI SDK is required for OCool calls. Run: .\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt"
-        ) from exc
 
     voiceover_items = [
         {
@@ -841,6 +969,7 @@ def humanize_voiceover_with_llm(
 - 句子要适合 TTS 直接念出来，短句优先，听起来像影视解说。
 - 可以让表达更有口语感，但不能新增没有证据的画面细节。
 - 不要明显缩短文案；每句通常保留原句 80% 到 120% 的字数和信息量，只改口播感。
+- 不要让总字数明显低于 length_requirements.min_total_cjk_chars；如果原句信息充足，优先保留细节。
 - 保持紧张、有压迫感、克制，不要变成夸张营销号。
 
 硬规则：
@@ -853,8 +982,9 @@ def humanize_voiceover_with_llm(
 - 如果 context_packet.tts_unfriendly_terms 或 bad_tts_terms 列出短语，一律禁止；默认也不要使用“说得平”“意思很明白”。
 - 不得把“语气平静”这类正常说法改成“说得平”。
 - 不得把保守表达改成更严重的威胁或结果；可以更口语，但不能升级事实。
+- 不得新增引号来复述角色台词；如果原文有台词感，要改成第三人称解说。
 - 每句尽量控制在 12 到 42 个中文字符；不要为了炫技写长句，也不要为了显得利落而丢信息。
-- 输出必须是 JSON，不要 Markdown，不要解释。
+- 输出必须是严格合法 JSON，不要 Markdown，不要解释。所有对象和数组元素之间必须有逗号，禁止尾逗号。
 
 JSON schema:
 {
@@ -867,12 +997,16 @@ JSON schema:
   ]
 }
 """.strip()
+    context_for_prompt = compact_context_for_prompt(context_packet)
+    length_requirements = voiceover_length_requirements(target_duration)
+    instructions = instructions + "\n\n" + narration_rules_for_prompt(context_for_prompt)
     prompt = json.dumps(
         {
             "target_duration_seconds": target_duration,
+            "length_requirements": length_requirements,
             "expected_voiceover_count": len(voiceover_items),
             "required_indexes": list(range(1, len(voiceover_items) + 1)),
-            "context_packet": context_packet or {},
+            "context_packet": context_for_prompt,
             "title": voiceover_doc.get("title", ""),
             "summary": voiceover_doc.get("summary", ""),
             "voiceover": voiceover_items,
@@ -880,14 +1014,17 @@ JSON schema:
         ensure_ascii=False,
     )
 
-    print(f"Calling OCool for humanized voiceover polish: {model}")
-    client = OpenAI(api_key=api_key, base_url=base_url)
-    response = client.responses.create(
+    print(f"Calling DashScope for humanized voiceover polish: {model}")
+    from llm_providers.dashscope import text_completion
+
+    text = text_completion(
         model=model,
         instructions=instructions,
-        input=prompt,
+        input_text=prompt,
+        base_url=base_url,
+        api_key=api_key,
     )
-    result = parse_json_response(extract_response_text(response))
+    result = parse_llm_json_response(text, model=model, base_url=base_url, api_key=api_key)
     rows = result.get("humanized_voiceover")
     if not isinstance(rows, list) or not rows:
         raise ValueError("Humanize model did not return any voiceover lines.")
@@ -1146,6 +1283,132 @@ def refresh_voiceover_timeline(alignment: list[dict[str, Any]]) -> list[dict[str
         row["voiceover_end"] = round(cursor + duration, 3)
         cursor += duration
     return alignment
+
+
+def atempo_filter_for_ratio(tempo: float) -> str:
+    if tempo <= 0:
+        raise SystemExit("Audio tempo ratio must be greater than 0.")
+    parts: list[float] = []
+    remaining = float(tempo)
+    while remaining < 0.5:
+        parts.append(0.5)
+        remaining /= 0.5
+    while remaining > 2.0:
+        parts.append(2.0)
+        remaining /= 2.0
+    parts.append(remaining)
+    return ",".join(f"atempo={part:.6g}" for part in parts)
+
+
+def fit_alignment_audio_to_target_duration(
+    alignment: list[dict[str, Any]],
+    output_dir: Path,
+    target_duration: float,
+    tolerance: float,
+    force: bool,
+) -> list[dict[str, Any]]:
+    if not alignment or target_duration <= 0:
+        return refresh_voiceover_timeline(alignment)
+
+    current_total = sum(float(row["voiceover_duration"]) for row in alignment)
+    delta = current_total - target_duration
+    if abs(delta) <= tolerance:
+        print(
+            f"Voiceover duration already near target: "
+            f"{current_total:.2f}s vs {target_duration:.2f}s."
+        )
+        return refresh_voiceover_timeline(alignment)
+
+    if current_total <= 0:
+        raise SystemExit("Cannot fit duration: total voiceover duration is zero.")
+    tempo = current_total / target_duration
+    filter_value = atempo_filter_for_ratio(tempo)
+    fitted_dir = output_dir / "voiceover_fitted"
+    fitted_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = fitted_dir / "fit_manifest.json"
+
+    print(
+        f"Fitting voiceover duration from {current_total:.2f}s to "
+        f"{target_duration:.2f}s with tempo ratio {tempo:.3f}."
+    )
+    if tempo < 0.65 or tempo > 1.25:
+        print(
+            "Warning: large duration adjustment may make narration sound less natural. "
+            "Consider generating a longer/shorter script for production quality."
+        )
+
+    fitted_items: list[dict[str, Any]] = []
+    for row in alignment:
+        source_value = row.get("voiceover_audio_path")
+        if not source_value:
+            raise SystemExit("Cannot fit duration: a voiceover row is missing voiceover_audio_path.")
+        source_path = Path(str(source_value))
+        if not source_path.exists():
+            raise SystemExit(f"Voiceover audio not found: {source_path}")
+
+        sentence_id = int(row["sentence_id"])
+        fitted_path = fitted_dir / f"voice_{sentence_id:03d}.mp3"
+        source_duration = ffprobe_duration_media(source_path)
+        needs_fit = force or not fitted_path.exists()
+        if not needs_fit and fitted_path.stat().st_mtime < source_path.stat().st_mtime:
+            needs_fit = True
+        if not needs_fit:
+            try:
+                fitted_duration = ffprobe_duration_media(fitted_path)
+                expected_duration = source_duration / tempo
+                needs_fit = abs(fitted_duration - expected_duration) > 0.35
+            except Exception:
+                needs_fit = True
+
+        if needs_fit:
+            run([
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(source_path),
+                "-vn",
+                "-filter:a",
+                filter_value,
+                "-codec:a",
+                "libmp3lame",
+                "-q:a",
+                "2",
+                str(fitted_path),
+            ])
+
+        fitted_duration = ffprobe_duration_media(fitted_path)
+        row["original_voiceover_audio_path"] = str(source_path)
+        row["original_voiceover_duration"] = round(source_duration, 3)
+        row["voiceover_audio_path"] = str(fitted_path)
+        row["voiceover_duration"] = round(fitted_duration, 3)
+        row["duration_fit_tempo"] = round(tempo, 6)
+        fitted_items.append({
+            "sentence_id": sentence_id,
+            "source_audio_path": str(source_path),
+            "fitted_audio_path": str(fitted_path),
+            "source_duration": round(source_duration, 3),
+            "fitted_duration": round(fitted_duration, 3),
+        })
+
+    fitted_total = sum(float(row["voiceover_duration"]) for row in alignment)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "target_duration": target_duration,
+                "tolerance": tolerance,
+                "source_total_duration": round(current_total, 3),
+                "fitted_total_duration": round(fitted_total, 3),
+                "tempo": round(tempo, 6),
+                "filter": filter_value,
+                "items": fitted_items,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    print(f"Fitted voiceover duration: {fitted_total:.2f}s.")
+    return refresh_voiceover_timeline(alignment)
 
 
 def limit_alignment_to_target_duration(
@@ -1521,19 +1784,110 @@ def mux_voiceover_audio(video_path: Path, voiceover_audio: Path, output_path: Pa
         
         str(output_path),
     ])
+
+
+def validate_final_duration(media_path: Path, target_duration: float, tolerance: float, label: str) -> float:
+    if target_duration <= 0:
+        return ffprobe_duration_media(media_path)
+    duration = ffprobe_duration_media(media_path)
+    delta = abs(duration - target_duration)
+    print(f"{label} duration check: {duration:.2f}s target={target_duration:.2f}s delta={delta:.2f}s")
+    if delta > tolerance:
+        raise SystemExit(
+            f"{label} duration is outside tolerance: {duration:.2f}s vs "
+            f"{target_duration:.2f}s target (tolerance {tolerance:.2f}s)."
+        )
+    return duration
+
+
+def add_background_music(
+    video_path: Path,
+    bgm_audio: Path,
+    output_path: Path,
+    *,
+    bgm_volume: float,
+    voiceover_volume: float,
+    bgm_start: float,
+    bgm_fade_in: float,
+    bgm_fade_out: float,
+) -> None:
+    if not bgm_audio.exists():
+        raise SystemExit(f"BGM audio not found: {bgm_audio}")
+    if bgm_volume < 0:
+        raise SystemExit("--bgm-volume must be greater than or equal to 0.")
+    if voiceover_volume < 0:
+        raise SystemExit("--voiceover-volume must be greater than or equal to 0.")
+    if bgm_start < 0:
+        raise SystemExit("--bgm-start must be greater than or equal to 0.")
+    if bgm_fade_in < 0:
+        raise SystemExit("--bgm-fade-in must be greater than or equal to 0.")
+    if bgm_fade_out < 0:
+        raise SystemExit("--bgm-fade-out must be greater than or equal to 0.")
+
+    video_duration = ffprobe_duration_media(video_path)
+    fade_in = min(bgm_fade_in, max(0.0, video_duration / 2))
+    fade_out = min(bgm_fade_out, max(0.0, video_duration / 2))
+    fade_out_start = max(0.0, video_duration - fade_out)
+    bgm_filters = [
+        f"atrim=0:{video_duration:.3f}",
+        "asetpts=PTS-STARTPTS",
+    ]
+    if fade_in > 0:
+        bgm_filters.append(f"afade=t=in:st=0:d={fade_in:.3f}")
+    if fade_out > 0:
+        bgm_filters.append(f"afade=t=out:st={fade_out_start:.3f}:d={fade_out:.3f}")
+    bgm_filters.append(f"volume={bgm_volume:.3f}")
+    filter_complex = (
+        f"[0:a]volume={voiceover_volume:.3f}[voice];"
+        f"[1:a]{','.join(bgm_filters)}[bgm];"
+        "[voice][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+    )
+    run([
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(video_path),
+        "-stream_loop",
+        "-1",
+        "-ss",
+        f"{bgm_start:.3f}",
+        "-i",
+        str(bgm_audio),
+        "-filter_complex",
+        filter_complex,
+        "-map",
+        "0:v:0",
+        "-map",
+        "[aout]",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-shortest",
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ])
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Voiceover-first video slicing demo: script -> transcript alignment -> real TTS duration -> final narrated cut.")
     parser.add_argument("--input", default=DEFAULT_INPUT, help="Input video path.")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Output directory.")
     parser.add_argument("--context", default=DEFAULT_CONTEXT_PATH, help="Optional context packet JSON path. Use this to provide title, people, background, and story constraints.")
     parser.add_argument("--target-duration", type=float, default=120.0, help="Target voiceover/video duration in seconds.")
+    parser.add_argument("--duration-tolerance", type=float, default=float(os.environ.get("DURATION_TOLERANCE", "3.0")), help="Allowed final duration drift in seconds.")
+    parser.add_argument("--no-fit-duration", action="store_true", help="Disable automatic audio time-stretching to match --target-duration.")
     parser.add_argument("--model-size", default="small", help="faster-whisper model size: tiny/base/small/medium/large-v3.")
     parser.add_argument("--device", default="cpu", help="Whisper device: cpu or cuda.")
     parser.add_argument("--compute-type", default="int8", help="Whisper compute type, e.g. int8, float16.")
     parser.add_argument("--language", default=None, help="Optional speech language, e.g. zh, en. Default: auto detect.")
-    parser.add_argument("--ocool-base-url", default=os.environ.get("OCOOL_BASE_URL", DEFAULT_OCOOL_BASE_URL))
-    parser.add_argument("--ocool-model", default=os.environ.get("OCOOL_MODEL", DEFAULT_OCOOL_MODEL))
-    parser.add_argument("--ocool-humanize-model", default=os.environ.get("OCOOL_HUMANIZE_MODEL", "qwen-plus-latest"), help="OpenAI-compatible model used only for human-style voiceover polish.")
+    parser.add_argument("--dashscope-base-url", default=os.environ.get("DASHSCOPE_BASE_URL", DEFAULT_DASHSCOPE_BASE_URL), help="DashScope official API base URL for script generation.")
+    parser.add_argument("--dashscope-model", "--ocool-model", dest="dashscope_model", default=os.environ.get("DASHSCOPE_MODEL", DEFAULT_DASHSCOPE_MODEL), help="DashScope model used for script generation. --ocool-model is kept as a legacy alias.")
+    parser.add_argument("--dashscope-humanize-model", "--ocool-humanize-model", dest="dashscope_humanize_model", default=os.environ.get("DASHSCOPE_HUMANIZE_MODEL", DEFAULT_DASHSCOPE_MODEL), help="DashScope model used only for human-style voiceover polish. --ocool-humanize-model is kept as a legacy alias.")
+    parser.add_argument("--ocool-base-url", default=os.environ.get("OCOOL_BASE_URL", DEFAULT_OCOOL_BASE_URL), help="OCool/OpenAI-compatible base URL used only when --tts-mode ocool.")
     parser.add_argument("--padding", type=float, default=0.25, help="Seconds to pad matched source visual clips.")
     parser.add_argument("--tts-mode", choices=["ocool", "fish", "none"], default=os.environ.get("TTS_MODE", "ocool"), help="Generate per-sentence voiceover. Use 'ocool' or 'fish' for API TTS, or 'none' for script/silent preview only.")
     parser.add_argument("--ocool-tts-model", default=os.environ.get("OCOOL_TTS_MODEL", "tts-1-hd"), help="OpenAI-compatible TTS model for --tts-mode ocool.")
@@ -1556,13 +1910,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--force-transcribe", action="store_true", help="Re-run Whisper even if transcript exists.")
     parser.add_argument("--force-audio", action="store_true", help="Re-extract audio even if audio.wav exists.")
     parser.add_argument("--force-script", action="store_true", help="Regenerate voiceover script even if voiceover_script.json exists.")
-    parser.add_argument("--no-llm", action="store_true", help="Do not call OCool, use local fallback voiceover draft.")
-    parser.add_argument("--require-llm", action="store_true", help="Fail instead of using fallback when OCool script generation fails.")
+    parser.add_argument("--no-llm", action="store_true", help="Do not call DashScope, use local fallback voiceover draft.")
+    parser.add_argument("--require-llm", action="store_true", help="Fail instead of using fallback when DashScope script generation fails.")
     parser.add_argument("--skip-review", action="store_true", help="Skip the second LLM semantic/read-aloud review pass before TTS.")
     parser.add_argument("--force-review", action="store_true", help="Review the script again even if voiceover_script.json is already marked reviewed.")
     parser.add_argument("--skip-humanize", action="store_true", help="Skip the human-style voiceover polish pass.")
     parser.add_argument("--force-humanize", action="store_true", help="Run the human-style polish pass again even if voiceover_script.json is already marked humanized.")
     parser.add_argument("--voiceover-audio", default=None, help="Optional narration audio path to mux into final_with_voiceover.mp4.")
+    parser.add_argument("--bgm-audio", default=os.environ.get("BGM_AUDIO", ""), help="Optional background music audio path. When set, writes final_with_bgm.mp4.")
+    parser.add_argument("--bgm-volume", type=float, default=float(os.environ.get("BGM_VOLUME", "0.16")), help="Background music volume multiplier. Keep it low under narration, e.g. 0.10-0.25.")
+    parser.add_argument("--voiceover-volume", type=float, default=float(os.environ.get("VOICEOVER_VOLUME", "1.0")), help="Narration volume multiplier used when mixing BGM.")
+    parser.add_argument("--bgm-start", type=float, default=float(os.environ.get("BGM_START", "0")), help="Seconds to skip from the BGM before mixing. Useful for landing on a stronger music section.")
+    parser.add_argument("--bgm-fade-in", type=float, default=float(os.environ.get("BGM_FADE_IN", "0.8")), help="BGM fade-in duration in seconds.")
+    parser.add_argument("--bgm-fade-out", type=float, default=float(os.environ.get("BGM_FADE_OUT", "2.5")), help="BGM fade-out duration in seconds, aligned to the final video ending.")
     return parser
 
 
@@ -1688,8 +2048,8 @@ def run_cli(args: argparse.Namespace) -> None:
                 voiceover_doc = generate_voiceover_with_llm(
                     segments=segments,
                     target_duration=args.target_duration,
-                    model=args.ocool_model,
-                    base_url=args.ocool_base_url,
+                    model=args.dashscope_model,
+                    base_url=args.dashscope_base_url,
                     context_packet=context_packet,
                 )
             except Exception as exc:
@@ -1714,8 +2074,8 @@ def run_cli(args: argparse.Namespace) -> None:
                 voiceover_doc=voiceover_doc,
                 segments=segments,
                 target_duration=args.target_duration,
-                model=args.ocool_model,
-                base_url=args.ocool_base_url,
+                model=args.dashscope_model,
+                base_url=args.dashscope_base_url,
                 context_packet=context_packet,
             )
         except Exception as exc:
@@ -1749,8 +2109,8 @@ def run_cli(args: argparse.Namespace) -> None:
             humanized_doc = humanize_voiceover_with_llm(
                 voiceover_doc=voiceover_doc,
                 target_duration=args.target_duration,
-                model=args.ocool_humanize_model,
-                base_url=args.ocool_base_url,
+                model=args.dashscope_humanize_model,
+                base_url=args.dashscope_base_url,
                 context_packet=context_packet,
             )
         except Exception as exc:
@@ -1796,11 +2156,19 @@ def run_cli(args: argparse.Namespace) -> None:
             fish_tts_latency=args.fish_tts_latency,
             force=args.force_tts,
         )
+        if not args.no_fit_duration:
+            alignment = fit_alignment_audio_to_target_duration(
+                alignment=alignment,
+                output_dir=output_dir,
+                target_duration=args.target_duration,
+                tolerance=args.duration_tolerance,
+                force=args.force_tts,
+            )
     else:
         print("TTS disabled. The final narrated video will not be rendered unless --voiceover-audio is provided.")
         alignment = apply_estimated_voiceover_timeline(alignment)
 
-    alignment = limit_alignment_to_target_duration(alignment, args.target_duration)
+    alignment = limit_alignment_to_target_duration(alignment, args.target_duration, tolerance=args.duration_tolerance)
     clips = build_clips_from_alignment(
         alignment=alignment,
         video_duration=video_duration,
@@ -1824,6 +2192,14 @@ def run_cli(args: argparse.Namespace) -> None:
         "title": voiceover_doc.get("title", ""),
         "summary": voiceover_doc.get("summary", ""),
         "context_packet": context_packet,
+        "bgm": {
+            "audio": args.bgm_audio,
+            "volume": args.bgm_volume,
+            "voiceover_volume": args.voiceover_volume,
+            "start": args.bgm_start,
+            "fade_in": args.bgm_fade_in,
+            "fade_out": args.bgm_fade_out,
+        } if args.bgm_audio else None,
         "clips": clips,
     }
     selected_path.write_text(json.dumps(selected_doc, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1837,10 +2213,32 @@ def run_cli(args: argparse.Namespace) -> None:
     elif args.voiceover_audio:
         final_path = output_dir / "final_with_voiceover.mp4"
         mux_voiceover_audio(output_video, Path(args.voiceover_audio), final_path)
+    if final_path:
+        validate_final_duration(final_path, args.target_duration, args.duration_tolerance, "Final narrated video")
+
+    final_with_bgm_path: Path | None = None
+    if args.bgm_audio:
+        if final_path is None:
+            print("BGM skipped because no narrated final video was rendered. Use --tts-mode fish/ocool or --voiceover-audio to mix BGM.")
+        else:
+            final_with_bgm_path = output_dir / "final_with_bgm.mp4"
+            add_background_music(
+                video_path=final_path,
+                bgm_audio=Path(args.bgm_audio),
+                output_path=final_with_bgm_path,
+                bgm_volume=args.bgm_volume,
+                voiceover_volume=args.voiceover_volume,
+                bgm_start=args.bgm_start,
+                bgm_fade_in=args.bgm_fade_in,
+                bgm_fade_out=args.bgm_fade_out,
+            )
+            validate_final_duration(final_with_bgm_path, args.target_duration, args.duration_tolerance, "Final narrated video with BGM")
 
     print(f"Wrote silent preview video: {output_video}")
     if final_path:
         print(f"Wrote final narrated video: {final_path}")
+    if final_with_bgm_path:
+        print(f"Wrote final narrated video with BGM: {final_with_bgm_path}")
     print(f"Wrote voiceover script: {script_txt_path}")
     print(f"Wrote voiceover JSON: {script_json_path}")
     print(f"Wrote voiceover subtitles: {voiceover_srt_path}")

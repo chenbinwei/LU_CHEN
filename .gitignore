@@ -47,3 +47,10 @@ batch.local.json
 # Local voice clone reference audio
 assets/voice_refs/*
 !assets/voice_refs/.gitkeep
+
+# Local background music
+assets/bgm/*
+!assets/bgm/.gitkeep
+
+# Local product data
+projects.local/

@@ -4,7 +4,14 @@
     "context": "context.json",
     "output_dir": "outputs/job_001",
     "target_duration": 120,
+    "duration_tolerance": 3.0,
     "tts_mode": "fish",
+    "bgm_audio": "",
+    "bgm_volume": 0.25,
+    "voiceover_volume": 1.0,
+    "bgm_start": 0,
+    "bgm_fade_in": 0,
+    "bgm_fade_out": 2.5,
     "require_llm": true
   }
 ]

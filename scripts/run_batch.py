@@ -15,6 +15,7 @@ FIELD_TO_FLAG = {
     "output_dir": "--output-dir",
     "context": "--context",
     "target_duration": "--target-duration",
+    "duration_tolerance": "--duration-tolerance",
     "model_size": "--model-size",
     "device": "--device",
     "compute_type": "--compute-type",
@@ -22,6 +23,12 @@ FIELD_TO_FLAG = {
     "tts_mode": "--tts-mode",
     "fish_reference_id": "--fish-reference-id",
     "padding": "--padding",
+    "bgm_audio": "--bgm-audio",
+    "bgm_volume": "--bgm-volume",
+    "voiceover_volume": "--voiceover-volume",
+    "bgm_start": "--bgm-start",
+    "bgm_fade_in": "--bgm-fade-in",
+    "bgm_fade_out": "--bgm-fade-out",
 }
 
 
@@ -36,6 +43,7 @@ BOOLEAN_FLAGS = {
     "skip_review": "--skip-review",
     "skip_humanize": "--skip-humanize",
     "no_llm": "--no-llm",
+    "no_fit_duration": "--no-fit-duration",
 }
 
 
