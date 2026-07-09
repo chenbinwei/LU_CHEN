@@ -2,3 +2,6 @@ faster-whisper==1.2.1
 openai>=1.0.0
 requests
 dashscope
+fastapi
+uvicorn
+httpx
