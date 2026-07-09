@@ -1,5 +1,6 @@
 import unittest
 import warnings
+from pathlib import Path
 
 warnings.filterwarnings(
     "ignore",
@@ -31,6 +32,46 @@ class FrontendStaticTest(unittest.TestCase):
         self.assertIn(".workspace", css.text)
         self.assertEqual(js.status_code, 200)
         self.assertIn("requestJson", js.text)
+
+    def test_frontend_contains_required_workspace_controls(self):
+        html = Path("frontend/index.html").read_text(encoding="utf-8")
+
+        required_ids = [
+            "projectForm",
+            "sourceVideoPath",
+            "sourceDurationSeconds",
+            "contextForm",
+            "contextTitle",
+            "correctSynopsis",
+            "storyFocus",
+            "versionForm",
+            "targetDurationSeconds",
+            "voiceCloneId",
+            "bgmPath",
+            "renderForm",
+            "ttsMode",
+            "jobList",
+        ]
+        for element_id in required_ids:
+            self.assertIn(f'id="{element_id}"', html)
+
+    def test_frontend_javascript_uses_backend_contract(self):
+        script = Path("frontend/app.js").read_text(encoding="utf-8")
+
+        required_snippets = [
+            'requestJson("/api/projects"',
+            "source_duration_seconds",
+            "context_packet",
+            "target_duration_seconds",
+            "voice_clone_id",
+            "bgm_path",
+            "voiceover_speed",
+            "targetDuration >= state.selectedProject.source_duration_seconds",
+            "setInterval",
+            "clearInterval",
+        ]
+        for snippet in required_snippets:
+            self.assertIn(snippet, script)
 
 
 if __name__ == "__main__":
