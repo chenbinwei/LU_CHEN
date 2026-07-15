@@ -5,3 +5,4 @@ dashscope
 fastapi
 uvicorn
 httpx
+pytest
